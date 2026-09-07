@@ -56,7 +56,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.version,
         description=(
-            "Groundwork — hybrid RAG over business documents: cited, confidence-scored "
+            "StudyBuddy — hybrid RAG over business documents: cited, confidence-scored "
             "answers with source passages, spreadsheet analytics, and next-step suggestions."
         ),
         lifespan=lifespan,

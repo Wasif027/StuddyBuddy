@@ -1,7 +1,7 @@
 [project]
-name = "ekdp-backend"
+name = "studybuddy-backend"
 version = "1.0.0"
-description = "Enterprise AI Knowledge & Decision Platform — backend"
+description = "StudyBuddy — backend"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

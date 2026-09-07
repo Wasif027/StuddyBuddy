@@ -1,8 +1,8 @@
 {
-  "name": "enterprise-ai-knowledge-frontend",
+  "name": "studybuddy-frontend",
   "version": "1.0.0",
   "private": true,
-  "description": "Frontend for the Enterprise AI Knowledge & Decision Platform — hybrid RAG with citations, confidence and controlled actions.",
+  "description": "Frontend for the StudyBuddy — hybrid RAG with citations, confidence and controlled actions.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

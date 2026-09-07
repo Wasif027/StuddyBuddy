@@ -6,13 +6,13 @@ import "./globals.css";
 import { Providers } from "@/components/providers/Providers";
 
 export const metadata: Metadata = {
-  title: "Groundwork",
+  title: "StudyBuddy",
   description:
     "Grounded RAG over your business documents — cited answers, spreadsheet analytics and an AI next-step decision log.",
-  applicationName: "Groundwork",
+  applicationName: "StudyBuddy",
   icons: { icon: "/favicon.svg" },
   openGraph: {
-    title: "Groundwork",
+    title: "StudyBuddy",
     description:
       "Upload PDFs, Word docs, spreadsheets and decks — ask questions and get answers with citations, run calculations over your data, and track the next steps an answer implies.",
     type: "website",
@@ -26,7 +26,7 @@ export const viewport: Viewport = {
   ],
 };
 
-const NO_FLASH = `(function(){try{var t=localStorage.getItem('ekdp-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');var r=document.documentElement;r.setAttribute('data-theme',t);r.classList.toggle('dark',t==='dark');r.style.colorScheme=t;}catch(e){}})();`;
+const NO_FLASH = `(function(){try{var t=localStorage.getItem('studybuddy-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');var r=document.documentElement;r.setAttribute('data-theme',t);r.classList.toggle('dark',t==='dark');r.style.colorScheme=t;}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

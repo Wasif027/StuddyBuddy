@@ -1,4 +1,4 @@
-# Frontend — Enterprise AI Knowledge & Decision Platform
+# Frontend — StudyBuddy
 
 Next.js 14 (App Router) · React 18 · TypeScript (strict) · Tailwind · Zustand.
 
@@ -25,7 +25,7 @@ npm run dev        # http://localhost:3000
 Requests go to `/api/v1/*` and are proxied to the backend by
 `next.config.mjs` (`API_PROXY_TARGET`, default `http://localhost:8000`) — one
 origin, clean SSE, no CORS. The JWT bearer token is kept in `localStorage`
-(`ekdp-token`) and attached to every request; a `401` clears it and returns to
+(`studybuddy-token`) and attached to every request; a `401` clears it and returns to
 the sign-in screen.
 
 ## Scripts

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     """Centralised, validated configuration singleton."""
 
     # ------------------------------------------------------------------ app
-    app_name: str = "Groundwork"
+    app_name: str = "StudyBuddy"
     app_env: Literal["development", "staging", "production", "test"] = "development"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------- data layer
     database_url: str = Field(
-        default="postgresql+psycopg://ekdp:ekdp@localhost:5432/ekdp",
+        default="postgresql+psycopg://studybuddy:studybuddy@localhost:5432/studybuddy",
         description="SQLAlchemy URL (psycopg v3 driver).",
     )
     redis_url: str = "redis://localhost:6379/0"

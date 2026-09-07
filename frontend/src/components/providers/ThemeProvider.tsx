@@ -11,7 +11,7 @@ interface ThemeCtx {
 }
 
 const Ctx = createContext<ThemeCtx | null>(null);
-const STORAGE_KEY = "ekdp-theme";
+const STORAGE_KEY = "studybuddy-theme";
 
 function apply(theme: Theme) {
   const root = document.documentElement;

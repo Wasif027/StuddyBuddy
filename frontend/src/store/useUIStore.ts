@@ -28,6 +28,6 @@ export const useUIStore = create<UIState>()(
       toggleLeftPinned: () => set((s) => ({ leftPinned: !s.leftPinned })),
       toggleRight: () => set((s) => ({ rightOpen: !s.rightOpen })),
     }),
-    { name: "ekdp-ui" },
+    { name: "studybuddy-ui" },
   ),
 );

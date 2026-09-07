@@ -1,4 +1,4 @@
-const KEY = "ekdp-token";
+const KEY = "studybuddy-token";
 
 let memToken: string | null = null;
 

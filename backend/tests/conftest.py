@@ -21,7 +21,7 @@ os.environ.setdefault("LLM_PROVIDER", "offline")
 os.environ.setdefault("EMBEDDING_PROVIDER", "deterministic")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-at-least-32-bytes-long")
 os.environ.setdefault(
-    "DATABASE_URL", "postgresql+psycopg://ekdp:ekdp@localhost:5432/ekdp_test"
+    "DATABASE_URL", "postgresql+psycopg://studybuddy:studybuddy@localhost:5432/studybuddy_test"
 )
 
 

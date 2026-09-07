@@ -53,7 +53,7 @@ def ping() -> bool:
 
 def cache_key(*parts: Any) -> str:
     raw = json.dumps(parts, sort_keys=True, default=str)
-    return "ekdp:" + hashlib.sha256(raw.encode()).hexdigest()[:40]
+    return "studybuddy:" + hashlib.sha256(raw.encode()).hexdigest()[:40]
 
 
 def get_json(key: str) -> Any | None:
@@ -100,7 +100,7 @@ def rate_limit_hit(identity: str, limit: int, window_seconds: int = 60) -> tuple
     if not client:
         return True, limit
     try:
-        bucket = f"ekdp:rl:{identity}:{window_seconds}"
+        bucket = f"studybuddy:rl:{identity}:{window_seconds}"
         count = client.incr(bucket)
         if count == 1:
             client.expire(bucket, window_seconds)

@@ -182,5 +182,5 @@ def delete_document(
         raise HTTPException(status_code=404, detail="document not found")
     db.delete(doc)
     db.commit()
-    cache.invalidate_prefix("ekdp:")
+    cache.invalidate_prefix("studybuddy:")
     return {"deleted": document_id}

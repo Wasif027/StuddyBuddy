@@ -1,5 +1,5 @@
 -- =============================================================================
--- Enterprise AI Knowledge & Decision Platform — database bootstrap
+-- StudyBuddy — database bootstrap
 -- =============================================================================
 -- Runs once on first Postgres container start (docker-entrypoint-initdb.d).
 -- Table creation itself is handled by the application (SQLAlchemy create_all in

@@ -1,8 +1,8 @@
 {
-  "name": "enterprise-knowledge-platform",
+  "name": "studybuddy",
   "version": "1.0.0",
   "private": true,
-  "description": "Enterprise AI Knowledge & Decision Platform — hybrid RAG with citations, confidence and controlled actions.",
+  "description": "StudyBuddy — hybrid RAG with citations, confidence and controlled actions.",
   "scripts": {
     "dev": "concurrently -k -n api,web -c yellow,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "cd backend && python -m uvicorn app.main:app --reload --port 8000",

@@ -1,4 +1,4 @@
-"""Enterprise Knowledge & Decision Platform - Backend application package.
+"""StudyBuddy - Backend application package.
 
 A production-grade FastAPI service that provides Retrieval-Augmented
 Generation (RAG) over ingested documents, plus an agentic "decision pipeline"

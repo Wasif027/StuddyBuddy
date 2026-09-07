@@ -1,4 +1,4 @@
-# Groundwork
+# StudyBuddy
 
 *An enterprise knowledge & decision platform.*
 

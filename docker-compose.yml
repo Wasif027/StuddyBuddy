@@ -1,5 +1,5 @@
 # =============================================================================
-# Groundwork — full stack
+# StudyBuddy — full stack
 # =============================================================================
 #   postgres        Postgres 16 + pgvector (documents, chunks, answers, suggestions)
 #   redis           answer cache + rate limiting
@@ -13,19 +13,19 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: ekdp-postgres
+    container_name: studybuddy-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-ekdp}
-      POSTGRES_USER: ${POSTGRES_USER:-ekdp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ekdp}
+      POSTGRES_DB: ${POSTGRES_DB:-studybuddy}
+      POSTGRES_USER: ${POSTGRES_USER:-studybuddy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studybuddy}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ekdp} -d ${POSTGRES_DB:-ekdp}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-studybuddy} -d ${POSTGRES_DB:-studybuddy}"]
       interval: 5s
       timeout: 3s
       retries: 15
@@ -33,7 +33,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: ekdp-redis
+    container_name: studybuddy-redis
     restart: unless-stopped
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
@@ -49,11 +49,11 @@ services:
     build:
       context: ./backend
       target: runtime
-    container_name: ekdp-backend
+    container_name: studybuddy-backend
     restart: unless-stopped
     environment:
       APP_ENV: production
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ekdp}:${POSTGRES_PASSWORD:-ekdp}@postgres:5432/${POSTGRES_DB:-ekdp}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-studybuddy}:${POSTGRES_PASSWORD:-studybuddy}@postgres:5432/${POSTGRES_DB:-studybuddy}
       REDIS_URL: redis://redis:6379/0
       OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
       OTEL_CONSOLE_EXPORT: "false"
@@ -85,7 +85,7 @@ services:
       target: runtime
       args:
         NEXT_PUBLIC_API_BASE_URL: /api/v1
-    container_name: ekdp-frontend
+    container_name: studybuddy-frontend
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -99,7 +99,7 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.110.0
-    container_name: ekdp-otel
+    container_name: studybuddy-otel
     restart: unless-stopped
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
@@ -112,12 +112,12 @@ services:
 
 networks:
   platform-internal:
-    name: ekdp-internal
+    name: studybuddy-internal
   platform-web:
-    name: ekdp-web
+    name: studybuddy-web
 
 volumes:
   postgres-data:
-    name: ekdp-postgres-data
+    name: studybuddy-postgres-data
   redis-data:
-    name: ekdp-redis-data
+    name: studybuddy-redis-data

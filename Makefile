@@ -1,5 +1,5 @@
 # =============================================================================
-# Enterprise AI Knowledge & Decision Platform
+# StudyBuddy
 # =============================================================================
 .DEFAULT_GOAL := help
 .PHONY: help up dev down down-v logs ps rebuild seed \

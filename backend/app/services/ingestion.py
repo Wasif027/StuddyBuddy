@@ -277,7 +277,7 @@ def ingest_content(
             logger.error("ingestion_failed", title=title, error=str(exc))
             raise
 
-        cache.invalidate_prefix("ekdp:")
+        cache.invalidate_prefix("studybuddy:")
         span.set_attribute("chunks", len(pieces))
         span.set_attribute("elapsed_ms", (time.perf_counter() - started) * 1000)
         return doc, len(pieces), False

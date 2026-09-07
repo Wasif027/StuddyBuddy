@@ -25,7 +25,7 @@ browser ──▶ frontend (same-origin /api/v1/*) ──▶ backend ──▶ P
 
 ## 2. Backend
 
-**Build:** `docker build -t groundwork-api ./backend`
+**Build:** `docker build -t studybuddy-api ./backend`
 
 **Environment** (see `backend/.env.example` for the full list):
 
@@ -36,7 +36,7 @@ browser ──▶ frontend (same-origin /api/v1/*) ──▶ backend ──▶ P
 | `DATABASE_URL` | the pooled URL from step 1 |
 | `AUTO_MIGRATE` | `false` |
 | `TRUST_PROXY` | `true` |
-| `CORS_ORIGINS` | the frontend's deployed origin, e.g. `https://groundwork.vercel.app` |
+| `CORS_ORIGINS` | the frontend's deployed origin, e.g. `https://studybuddy.vercel.app` |
 | `LLM_PROVIDER` + `OPENAI_*` / `EMBEDDING_*` | your Gemini (or other) keys — or leave `LLM_PROVIDER=offline` for extractive-only |
 | `CACHE_ENABLED` | `false` unless you also set `REDIS_URL` (the app degrades cleanly without Redis) |
 | `RATE_LIMIT_PER_MINUTE` | `30` is fine; raise if you expect concurrent demo users |
@@ -71,7 +71,7 @@ Set one env var:
 
 | Var | Value |
 | --- | --- |
-| `API_PROXY_TARGET` | the backend's public URL, e.g. `https://groundwork-api.onrender.com` |
+| `API_PROXY_TARGET` | the backend's public URL, e.g. `https://studybuddy-api.onrender.com` |
 
 The browser only ever calls the frontend's own origin (`/api/v1/*`); the Next
 server proxies to `API_PROXY_TARGET`, so SSE streams cleanly and there is no

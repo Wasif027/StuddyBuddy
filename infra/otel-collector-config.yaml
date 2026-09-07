@@ -1,5 +1,5 @@
 # =============================================================================
-# OpenTelemetry Collector — EKDP (dev profile)
+# OpenTelemetry Collector — StudyBuddy (dev profile)
 # Receives OTLP from the backend, prints to stdout, exposes a Prometheus
 # scrape endpoint. Add jaeger/tempo/datadog exporters for production.
 # =============================================================================
