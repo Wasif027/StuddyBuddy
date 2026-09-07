@@ -1,0 +1,35 @@
+[project]
+name = "ekdp-backend"
+version = "1.0.0"
+description = "Enterprise AI Knowledge & Decision Platform — backend"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+addopts = "-q --tb=short"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    # FastAPI 0.115 + Pydantic 2.13 emit this for camelCase-aliased body models
+    # during request parsing. Cosmetic — aliases work (verified end-to-end).
+    "ignore::UserWarning:pydantic._internal._generate_schema",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["alembic"]
+
+[tool.ruff.lint]
+# B008: FastAPI Depends() in defaults · E501: handled by formatter · UP042:
+# `str, Enum` is intentional (JSON-friendly, 3.11-compatible)
+select = ["E", "F", "I", "UP", "B", "C4"]
+ignore = ["B008", "E501", "UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B905"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/seed.py", "tests/*"]

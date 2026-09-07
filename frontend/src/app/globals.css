@@ -1,0 +1,281 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ── Design tokens ─────────────────────────────────────────────────────────
+ * Warm-tinted charcoal surfaces, one considered accent (amber/ochre — reads as
+ * "documents / knowledge / verified"), semantic colours desaturated so nothing
+ * screams. Values are space-separated RGB channels for Tailwind <alpha-value>.
+ */
+:root {
+  --surface-base: 247 246 243;
+  --surface-raised: 255 255 254;
+  --surface-overlay: 255 255 254;
+  --surface-sunken: 240 238 233;
+  --line: 226 223 214;
+  --line-strong: 205 200 188;
+  --content-primary: 28 26 23;
+  --content-secondary: 82 78 70;
+  --content-muted: 128 122 110;
+  --content-inverted: 250 249 246;
+  --accent: 176 116 40;          /* ochre */
+  --accent-soft: 244 236 222;
+  --accent-contrast: 255 253 249;
+  --positive: 42 122 84;
+  --caution: 179 120 20;
+  --danger: 186 68 55;
+  --shadow: 40 33 22;
+  --grain-opacity: 0.035;
+}
+
+:root[data-theme="dark"],
+.dark {
+  --surface-base: 18 17 16;
+  --surface-raised: 25 24 22;
+  --surface-overlay: 31 29 27;
+  --surface-sunken: 21 20 18;
+  --line: 42 40 36;
+  --line-strong: 58 55 49;
+  --content-primary: 237 234 227;
+  --content-secondary: 178 172 160;
+  --content-muted: 129 123 111;
+  --content-inverted: 18 17 16;
+  --accent: 224 168 92;
+  --accent-soft: 44 37 27;
+  --accent-contrast: 22 18 12;
+  --positive: 92 194 142;
+  --caution: 224 170 92;
+  --danger: 232 130 118;
+  --shadow: 0 0 0;
+  --grain-opacity: 0.05;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: rgb(var(--line));
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: rgb(var(--surface-base));
+  color: rgb(var(--content-primary));
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "cv05", "cv08", "ss03";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Fixed grain overlay — breaks digital flatness without touching layout. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background-color: rgb(var(--accent) / 0.22);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line-strong) / 0.7);
+  border-radius: 999px;
+  border: 3px solid rgb(var(--surface-base));
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--content-muted));
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line-strong) / 0.7) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+@layer components {
+  .panel {
+    @apply border-line bg-surface-raised;
+  }
+  /* Cards exist only when elevation communicates hierarchy — kept minimal. */
+  .card {
+    @apply rounded-lg border border-line bg-surface-raised;
+    box-shadow:
+      0 1px 2px rgb(var(--shadow) / 0.05),
+      0 12px 32px -16px rgb(var(--shadow) / 0.14);
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-sunken px-2 py-[3px] text-2xs font-medium tracking-tight text-content-secondary;
+  }
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-1.5 rounded-lg border border-line bg-surface-raised px-3 py-1.5 text-sm font-medium text-content-primary transition-[background-color,border-color,transform,box-shadow] duration-150 hover:bg-surface-sunken active:translate-y-px active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-accent {
+    @apply border-transparent bg-accent text-accent-contrast;
+    box-shadow: 0 1px 2px rgb(var(--shadow) / 0.15), 0 8px 20px -10px rgb(var(--accent) / 0.5);
+  }
+  /* Lighten on hover with a translucent overlay, NOT filter:brightness — a
+   * `filter` on a text+shadow element rasterises it and blurs the label. */
+  .btn-accent:hover {
+    box-shadow:
+      inset 0 0 0 999px rgb(255 255 255 / 0.1),
+      0 1px 2px rgb(var(--shadow) / 0.15),
+      0 10px 24px -10px rgb(var(--accent) / 0.55);
+  }
+  .btn-danger {
+    @apply border-transparent bg-danger text-white;
+  }
+  .btn-danger:hover {
+    box-shadow: inset 0 0 0 999px rgb(255 255 255 / 0.1);
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent hover:bg-surface-sunken;
+  }
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface-base px-3 py-2 text-sm text-content-primary placeholder:text-content-muted focus:outline-none;
+  }
+  .input:focus {
+    border-color: rgb(var(--accent) / 0.55);
+    box-shadow: 0 0 0 4px rgb(var(--accent) / 0.12);
+  }
+  .label {
+    @apply text-2xs font-medium uppercase tracking-[0.09em] text-content-muted;
+  }
+}
+
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+  }
+  .above-grain {
+    position: relative;
+    z-index: 2;
+  }
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-surface-sunken;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full;
+    background-image: linear-gradient(90deg, transparent, rgb(var(--content-muted) / 0.14), transparent);
+    animation: shimmer 1.7s infinite;
+  }
+  .stagger > * {
+    opacity: 0;
+    animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  .stagger > *:nth-child(1) { animation-delay: 0.02s; }
+  .stagger > *:nth-child(2) { animation-delay: 0.07s; }
+  .stagger > *:nth-child(3) { animation-delay: 0.12s; }
+  .stagger > *:nth-child(4) { animation-delay: 0.17s; }
+  .stagger > *:nth-child(5) { animation-delay: 0.22s; }
+  .stagger > *:nth-child(6) { animation-delay: 0.27s; }
+  .stagger > *:nth-child(7) { animation-delay: 0.32s; }
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes caret-blink {
+  0%, 62%, 100% { opacity: 1; }
+  20%, 45% { opacity: 0; }
+}
+@keyframes flash {
+  0% { background-color: rgb(var(--accent) / 0.22); border-color: rgb(var(--accent)); }
+  100% { background-color: transparent; }
+}
+.citation-flash {
+  animation: flash 1.6s ease-out;
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: rgb(var(--accent));
+  animation: caret-blink 1.1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .stagger > * { opacity: 1; }
+}
+
+/* ── Answer prose ─────────────────────────────────────────────────────────── */
+.prose-answer {
+  font-size: 0.95rem;
+  line-height: 1.68;
+  color: rgb(var(--content-primary));
+  max-width: 68ch;
+  text-wrap: pretty;
+}
+.prose-answer p { margin: 0.55rem 0; }
+.prose-answer p:first-child { margin-top: 0; }
+.prose-answer strong { font-weight: 600; }
+.prose-answer code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.82em;
+  background: rgb(var(--surface-sunken));
+  border: 1px solid rgb(var(--line));
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+.prose-answer ul,
+.prose-answer ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+.prose-answer li { margin: 0.28rem 0; }
+.prose-answer ul { list-style: none; }
+.prose-answer ul > li::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+  background: rgb(var(--accent));
+  margin-right: 0.6rem;
+  vertical-align: middle;
+}

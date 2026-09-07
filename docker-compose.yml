@@ -1,0 +1,123 @@
+# =============================================================================
+# Groundwork — full stack
+# =============================================================================
+#   postgres        Postgres 16 + pgvector (documents, chunks, answers, suggestions)
+#   redis           answer cache + rate limiting
+#   backend         FastAPI — ingestion, hybrid RAG, spreadsheet analytics
+#   frontend        Next.js analyst workspace
+#   otel-collector  OpenTelemetry traces/metrics (stdout in dev)
+#
+#   docker compose up --build
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ekdp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ekdp}
+      POSTGRES_USER: ${POSTGRES_USER:-ekdp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ekdp}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ekdp} -d ${POSTGRES_DB:-ekdp}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [platform-internal]
+
+  redis:
+    image: redis:7-alpine
+    container_name: ekdp-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [platform-internal]
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    container_name: ekdp-backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ekdp}:${POSTGRES_PASSWORD:-ekdp}@postgres:5432/${POSTGRES_DB:-ekdp}
+      REDIS_URL: redis://redis:6379/0
+      OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_CONSOLE_EXPORT: "false"
+      CORS_ORIGINS: http://localhost:3000,http://frontend:3000
+      LOG_JSON: "true"
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-change-me-0000000000000000}
+      # LLM synthesis — defaults to free offline mode; override in the root .env
+      # (e.g. LLM_PROVIDER=openai + Groq creds) and compose passes them through.
+      LLM_PROVIDER: ${LLM_PROVIDER:-offline}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks: [platform-internal, platform-web]
+
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+      args:
+        NEXT_PUBLIC_API_BASE_URL: /api/v1
+    container_name: ekdp-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Same-origin: the Next.js server proxies /api/v1/* to the backend.
+      API_PROXY_TARGET: http://backend:8000
+      NEXT_PUBLIC_API_BASE_URL: /api/v1
+    ports:
+      - "3000:3000"
+    depends_on: [backend]
+    networks: [platform-web]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: ekdp-otel
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./infra/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    networks: [platform-internal]
+
+networks:
+  platform-internal:
+    name: ekdp-internal
+  platform-web:
+    name: ekdp-web
+
+volumes:
+  postgres-data:
+    name: ekdp-postgres-data
+  redis-data:
+    name: ekdp-redis-data
