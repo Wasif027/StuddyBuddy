@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.orm import (
     Attempt,
+    Conversation,
     Document,
     Message,
     PracticeSet,
@@ -102,14 +103,25 @@ def _gather_context(
         ctx = "\n\n".join(c.chunk.text for c in chunks)[:12000]
         return (topic or doc.title, ctx, "document")
 
+    # A chat's running "working memory" — course definitions, corrections, etc. —
+    # is prepended to whatever else we gather so the questions stay consistent
+    # with the tutoring so far.
+    chat_ctx = ""
+    if conversation_id:
+        conv = db.get(Conversation, conversation_id)
+        if conv and conv.user_id == user.id:
+            rendered = llm.render_context(conv.context_json or {})
+            if rendered:
+                chat_ctx = "WHAT THIS CHAT HAS ESTABLISHED (honour these definitions):\n" + rendered + "\n\n"
+
     if topic:
-        scope = Scope(user_id=user.id, category=category)
+        scope = Scope(user_id=user.id, category=category, conversation_id=conversation_id)
         try:
             hits = hybrid_search(db, query=topic, embedding=embed_text(topic), k=10, scope=scope)
         except Exception:  # retrieval is best-effort here
             hits = []
         ctx = "\n\n".join(h.chunk.text for h in hits if h.score > 0.05)[:9000]
-        return (topic, ctx, "topic")
+        return (topic, chat_ctx + ctx, "topic" if not conversation_id else "chat")
 
     if conversation_id:
         rows = db.execute(
@@ -121,7 +133,7 @@ def _gather_context(
         rows = list(reversed(rows))
         last_user = next((c for r, c in reversed(rows) if str(r) in ("user", "MessageRole.USER")), "")
         convo = "\n".join(f"{r}: {c[:600]}" for r, c in rows)
-        return (topic or last_user[:120] or "this conversation", convo[:8000], "chat")
+        return (topic or last_user[:120] or "this conversation", chat_ctx + convo[:8000], "chat")
 
     raise ValueError("provide a topic, a document, or a conversation to build questions from")
 

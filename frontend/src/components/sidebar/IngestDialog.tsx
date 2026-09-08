@@ -12,19 +12,25 @@ type Mode = "upload" | "image" | "paste";
 
 export function IngestDialog() {
   const open = useUIStore((s) => s.ingestOpen);
+  const view = useUIStore((s) => s.view);
   const onClose = () => useUIStore.getState().setIngestOpen(false);
   const ingestText = useAppStore((s) => s.ingestText);
   const uploadDoc = useAppStore((s) => s.uploadDoc);
   const categories = useAppStore((s) => s.categories);
+  const activeId = useAppStore((s) => s.activeId);
+  const inChat = view === "chat" && !!activeId;
 
   const [mode, setMode] = useState<Mode>("upload");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [hint, setHint] = useState("");
   const [category, setCategory] = useState("");
+  const [attach, setAttach] = useState(true);
   const [busy, setBusy] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const convId = inChat && attach ? activeId : null;
 
   const reset = () => {
     setTitle("");
@@ -38,9 +44,19 @@ export function IngestDialog() {
     setBusy(true);
     let ok = false;
     if (mode === "paste") {
-      ok = await ingestText({ title: title.trim(), content: content.trim(), category: category || null });
+      ok = await ingestText({
+        title: title.trim(),
+        content: content.trim(),
+        category: category || null,
+        conversationId: convId,
+      });
     } else if (file) {
-      const res = await uploadDoc(file, { category: category || null, title: title.trim() || undefined, hint: hint.trim() || undefined });
+      const res = await uploadDoc(file, {
+        category: category || null,
+        title: title.trim() || undefined,
+        hint: hint.trim() || undefined,
+        conversationId: convId,
+      });
       ok = res.ok;
     }
     setBusy(false);
@@ -158,6 +174,18 @@ export function IngestDialog() {
           </>
         )}
       </div>
+
+      {inChat && (
+        <label className="mt-4 flex items-center gap-2 text-2xs text-content-secondary">
+          <input
+            type="checkbox"
+            checked={attach}
+            onChange={(e) => setAttach(e.target.checked)}
+            className="h-3 w-3 accent-[rgb(var(--accent))]"
+          />
+          Attach to this chat — the tutor will factor it into everything from here on
+        </label>
+      )}
 
       <div className="mt-6 flex justify-end gap-2">
         <button onClick={onClose} className="btn text-xs">

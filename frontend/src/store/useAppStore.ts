@@ -6,6 +6,7 @@ import { api, ApiError } from "@/lib/api";
 import type {
   AnswerResponse,
   Category,
+  ChatContext,
   ChatMessage,
   Conversation,
   ConversationMessage,
@@ -43,12 +44,15 @@ interface AppState {
   streamingChunks: SourceChunk[];
   highlightedChunkId: string | null;
   highlightedMessageId: string | null;
+  activeContext: ChatContext | null;
+  attachedDocs: string[];
 
   _abort: AbortController | null;
 
   init: () => Promise<void>;
   refreshMeta: () => Promise<void>;
   refreshConversations: () => Promise<void>;
+  refreshActiveContext: () => Promise<void>;
   openChat: (id: string, targetMessageId?: string | null) => Promise<void>;
   newChat: () => void;
   renameChat: (id: string, title: string) => Promise<void>;
@@ -63,10 +67,15 @@ interface AppState {
   summariseDoc: (id: string, title: string) => Promise<void>;
   stop: () => void;
 
-  ingestText: (input: { title: string; content: string; category?: string | null }) => Promise<boolean>;
+  ingestText: (input: {
+    title: string;
+    content: string;
+    category?: string | null;
+    conversationId?: string | null;
+  }) => Promise<boolean>;
   uploadDoc: (
     file: File,
-    opts?: { category?: string | null; title?: string; hint?: string },
+    opts?: { category?: string | null; title?: string; hint?: string; conversationId?: string | null },
   ) => Promise<{ ok: boolean; detectedKind?: string | null; noteId?: string | null }>;
   deleteDoc: (id: string) => Promise<void>;
 }
@@ -103,6 +112,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamingChunks: [],
   highlightedChunkId: null,
   highlightedMessageId: null,
+  activeContext: null,
+  attachedDocs: [],
   _abort: null,
 
   async init() {
@@ -143,6 +154,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  async refreshActiveContext() {
+    const id = get().activeId;
+    if (!id) return;
+    try {
+      const d = await api.getConversation(id);
+      set({ activeContext: d.context, attachedDocs: d.attachedDocuments });
+    } catch {
+      /* non-critical */
+    }
+  },
+
   async openChat(id, targetMessageId) {
     if (get().streaming) return;
     set({ loadingConversation: true, activeId: id });
@@ -158,6 +180,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingChunks: [],
         highlightedChunkId: null,
         highlightedMessageId: targeted ? targeted.id : null,
+        activeContext: detail.context,
+        attachedDocs: detail.attachedDocuments,
       });
     } catch (err) {
       toast.error("Could not open chat", err instanceof Error ? err.message : String(err));
@@ -175,6 +199,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingChunks: [],
       highlightedChunkId: null,
       highlightedMessageId: null,
+      activeContext: null,
+      attachedDocs: [],
       compareDocIds: [],
     });
     useUIStore.getState().setView("chat");
@@ -297,6 +323,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } finally {
       set({ streaming: false, _abort: null });
       if (isNewConversation) get().refreshConversations();
+      if (get().activeId) get().refreshActiveContext();
     }
   },
 
@@ -321,6 +348,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         `${res.documentTitle} · ${res.chunksCreated} sections`,
       );
       await get().refreshMeta();
+      if (input.conversationId && get().activeId === input.conversationId) {
+        await get().refreshActiveContext();
+      }
       return true;
     } catch (err) {
       toast.error("Couldn't add that", err instanceof Error ? err.message : String(err));
@@ -337,6 +367,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         `${res.documentTitle}${kindLabel}`,
       );
       await get().refreshMeta();
+      if (opts?.conversationId && get().activeId === opts.conversationId) {
+        await get().refreshActiveContext();
+      }
       return { ok: true, detectedKind: res.detectedKind, noteId: res.noteId };
     } catch (err) {
       toast.error("Couldn't add that file", err instanceof Error ? err.message : String(err));

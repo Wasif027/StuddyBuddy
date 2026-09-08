@@ -19,6 +19,7 @@ from app.routers import (
     categories_router,
     conversations_router,
     documents_router,
+    export_router,
     health_router,
     notes_router,
     practice_router,
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(study_guide_router, prefix=prefix)
     app.include_router(notes_router, prefix=prefix)
     app.include_router(progress_router, prefix=prefix)
+    app.include_router(export_router, prefix=prefix)
 
     @app.get("/", include_in_schema=False)
     async def root():

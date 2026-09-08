@@ -43,6 +43,8 @@ class Scope:
     user_id: str
     category: str | None = None
     document_ids: Sequence[str] | None = None
+    # Materials attached to this chat — always included, on top of any filter.
+    conversation_id: str | None = None
 
 
 def _clamp(x: float) -> float:
@@ -50,6 +52,8 @@ def _clamp(x: float) -> float:
 
 
 def _apply_scope(stmt: Select, scope: Scope) -> Select:
+    from sqlalchemy import or_
+
     # contains_eager: the Document is already joined for scoping, so load it onto
     # the Chunk in the same round trip — callers read chunk.document.title/category.
     stmt = (
@@ -57,10 +61,18 @@ def _apply_scope(stmt: Select, scope: Scope) -> Select:
         .options(contains_eager(Chunk.document))
         .where(Document.user_id == scope.user_id)
     )
+    filters = []
     if scope.category:
-        stmt = stmt.where(Document.category == scope.category)
+        filters.append(Document.category == scope.category)
     if scope.document_ids:
-        stmt = stmt.where(Document.id.in_(list(scope.document_ids)))
+        filters.append(Document.id.in_(list(scope.document_ids)))
+    attached = Document.conversation_id == scope.conversation_id if scope.conversation_id else None
+    if filters:
+        stmt = stmt.where(or_(*filters, attached) if attached is not None else or_(*filters))
+    elif attached is not None:
+        # No explicit filter — the attached docs are already the user's, so just
+        # search everything; nothing to narrow.
+        pass
     return stmt
 
 

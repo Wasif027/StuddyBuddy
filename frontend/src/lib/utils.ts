@@ -34,3 +34,14 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 export function scorePercent(score: number): string {
   return `${(Math.max(0, Math.min(1, score)) * 100).toFixed(0)}%`;
 }
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

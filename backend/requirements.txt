@@ -34,6 +34,9 @@ python-docx>=1.1       # .docx notes
 python-pptx>=1.0       # .pptx decks
 pillow>=10.3           # image normalisation for vision ingest
 
+# --- Export --------------------------------------------------------------
+fpdf2>=2.7             # markdown -> PDF, pure Python (no system deps)
+
 # --- Observability -------------------------------------------------------
 opentelemetry-api>=1.25
 opentelemetry-sdk>=1.25

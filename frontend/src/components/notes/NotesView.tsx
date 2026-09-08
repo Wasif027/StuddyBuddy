@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { api } from "@/lib/api";
 import type { NoteKind, NoteRead, RoutineDay } from "@/lib/types";
-import { cn, formatRelativeTime } from "@/lib/utils";
+import { cn, downloadBlob, formatRelativeTime } from "@/lib/utils";
+import { toast } from "@/store/useToast";
 import { useStudyStore } from "@/store/useStudyStore";
 import { AnswerText } from "@/components/chat/AnswerText";
 import {
@@ -270,6 +272,23 @@ function NoteDetail({ note }: { note: NoteRead }) {
               >
                 {generating ? <Spinner className="h-3.5 w-3.5 animate-spin" /> : <Exam className="h-3.5 w-3.5" />}
                 Quiz me on this
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const blob = await api.exportMarkdown({
+                      format: "pdf",
+                      title: note.title,
+                      markdown: note.bodyMd,
+                    });
+                    downloadBlob(blob, "studybuddy-note.pdf");
+                  } catch (err) {
+                    toast.error("Couldn't make the PDF", err instanceof Error ? err.message : String(err));
+                  }
+                }}
+                className="btn h-8 px-3 text-xs"
+              >
+                Download PDF
               </button>
             </div>
           </>

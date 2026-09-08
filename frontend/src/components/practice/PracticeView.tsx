@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 
+import { api } from "@/lib/api";
 import type { PracticeSetSummary, QuestionRead } from "@/lib/types";
-import { cn, formatRelativeTime } from "@/lib/utils";
+import { cn, downloadBlob, formatRelativeTime } from "@/lib/utils";
+import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useStudyStore } from "@/store/useStudyStore";
@@ -194,10 +196,24 @@ function SetRow({
 
 function PracticeRunner() {
   const set = useStudyStore((s) => s.activeSet)!;
+  const downloadPdf = async () => {
+    try {
+      const blob = await api.exportPracticeSet(set.id, "pdf");
+      downloadBlob(blob, "studybuddy-practice.pdf");
+    } catch (err) {
+      toast.error("Couldn't make the PDF", err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <>
       <div className="mb-5">
-        <h2 className="text-lg font-semibold tracking-tight text-content-primary">{set.topic}</h2>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="text-lg font-semibold tracking-tight text-content-primary">{set.topic}</h2>
+          <button onClick={downloadPdf} className="btn btn-ghost h-7 shrink-0 px-2 text-2xs text-content-muted">
+            Download PDF
+          </button>
+        </div>
         <p className="mt-1 text-2xs text-content-muted">
           {set.studyLevel} · {set.answered}/{set.questions.length} answered ·{" "}
           {set.answered ? Math.round((set.correct / set.answered) * 100) : 0}% right · {set.model}

@@ -6,6 +6,7 @@ import { useAppStore } from "@/store/useAppStore";
 import { useUIStore } from "@/store/useUIStore";
 import { BookOpen, Stack, X } from "@/components/ui/icons";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
+import { ChatContextPanel } from "./ChatContextPanel";
 import { PassageCard } from "./PassageCard";
 
 export function RightPanel() {
@@ -79,6 +80,8 @@ export function RightPanel() {
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
+
+        <ChatContextPanel />
 
         <div className="flex-1 overflow-y-auto">
           {empty ? (

@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.telemetry import tracer
-from app.models.orm import Chunk, Document, DocumentSlide, Note, NoteKind, User
+from app.models.orm import Chunk, Conversation, Document, DocumentSlide, Note, NoteKind, User
 from app.models.schemas import (
     DocumentChunkPreview,
     DocumentDetail,
@@ -36,6 +36,13 @@ from app.services.ingestion import (
 _tracer = tracer(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
+
+
+def _resolve_conv(db: Session, user: User, conversation_id: str | None) -> str | None:
+    if not conversation_id:
+        return None
+    conv = db.get(Conversation, conversation_id)
+    return conv.id if conv and conv.user_id == user.id else None
 
 
 def _slide_count(db: Session, document_id: str) -> int:
@@ -93,6 +100,7 @@ def ingest_document(
         category=category,
         source_type=request.source_type,
         metadata=request.metadata,
+        conversation_id=_resolve_conv(db, user, request.conversation_id),
     )
     return _ingestion_response(doc, chunks, deduped, started)
 
@@ -103,6 +111,7 @@ async def upload_document(
     category: str | None = Form(default=None),
     title: str | None = Form(default=None),
     hint: str | None = Form(default=None),
+    conversation_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> IngestionResponse:
@@ -116,6 +125,7 @@ async def upload_document(
     name = file.filename or "upload"
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     slug = ensure_category(db, user, category) if category else None
+    conv_id = _resolve_conv(db, user, conversation_id)
 
     # ---------- image scan → vision ----------
     if ext in IMAGE_UPLOAD_TYPES:
@@ -144,6 +154,7 @@ async def upload_document(
                 "kind": "image",
                 "imageKind": result.kind,
             },
+            conversation_id=conv_id,
         )
 
         note_id: str | None = None
@@ -181,6 +192,7 @@ async def upload_document(
         source_type=parsed.kind,
         metadata={"filename": name, "content_type": file.content_type},
         slides=parsed.slides,
+        conversation_id=conv_id,
     )
     return _ingestion_response(doc, chunks, deduped, started)
 

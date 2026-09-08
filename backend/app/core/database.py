@@ -127,7 +127,10 @@ def _ensure_columns() -> None:
     """
     stmts = (
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS study_level varchar(32) NOT NULL DEFAULT 'high-school'",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS context_json jsonb NOT NULL DEFAULT '{}'::jsonb",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS conversation_id varchar(36)",
         "CREATE INDEX IF NOT EXISTS ix_chunks_document_id ON chunks (document_id)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_conversation_id ON documents (conversation_id)",
     )
     with engine.begin() as conn:
         for stmt in stmts:

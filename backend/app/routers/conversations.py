@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.models.orm import Conversation, Message, User
+from app.models.orm import Conversation, Document, Message, User
 from app.models.schemas import (
     AnswerResponse,
+    ChatContext,
     ConversationCreate,
     ConversationDetail,
     ConversationRead,
@@ -85,6 +86,10 @@ def get_conversation(
         .where(Message.conversation_id == conv.id)
         .order_by(Message.created_at, Message.role.desc())
     ).scalars().all()
+    attached = db.execute(
+        select(Document.title).where(Document.conversation_id == conv.id)
+    ).scalars().all()
+    ctx = conv.context_json or {}
     return ConversationDetail(
         id=conv.id,
         title=conv.title,
@@ -92,6 +97,8 @@ def get_conversation(
         last_message_at=messages[-1].created_at if messages else None,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        context=ChatContext(**{k: v for k, v in ctx.items() if k in ChatContext.model_fields}),
+        attached_documents=list(attached),
         messages=[
             MessageRead(
                 id=m.id,

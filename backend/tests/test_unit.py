@@ -146,6 +146,38 @@ def test_meta_detect_classifies_conversational_input():
     assert not is_ephemeral("doc_list") and not is_ephemeral("count")
 
 
+# --------------------------------------------------------------- chat context
+def test_render_context_summarises_working_memory():
+    from app.services.llm import render_context
+
+    ctx = {
+        "summary": "Working through forces at A-level.",
+        "topics": ["Newton's laws"],
+        "established": [
+            {"fact": "In this course, weight = m*g with g=9.81", "source": "student", "verified": True},
+            {"fact": "force is measured in kilograms", "source": "student", "verified": False},
+        ],
+        "student_claims": [{"claim": "acceleration is always zero", "issue": "only true at constant velocity"}],
+        "corrections": [{"was": "F = m/a", "now": "F = m*a"}],
+    }
+    out = render_context(ctx)
+    assert "weight = m*g" in out
+    assert "UNVERIFIED student claim" in out
+    assert "correct it" in out.lower()
+    assert "F = m*a" in out
+    assert render_context({}) == ""
+
+
+# --------------------------------------------------------------- export
+def test_markdown_to_pdf_produces_a_pdf():
+    from app.services.export import markdown_to_pdf, to_markdown_file
+
+    md = "# Title\n\nA **bold** claim.\n\n- one\n- two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n> note\n"
+    pdf = markdown_to_pdf("Study guide", md)
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 800
+    assert to_markdown_file("T", "body").startswith(b"# T")
+
+
 # --------------------------------------------------------------- catalog
 def test_slugify_and_defaults():
     from app.services.catalog import DEFAULT_CATEGORIES, slugify
@@ -195,15 +227,17 @@ def test_offline_question_set_has_correct_shape():
 
 # --------------------------------------------------------------- progress
 def test_progress_streaks():
-    from datetime import date, timedelta
+    from datetime import UTC, datetime, timedelta
 
     from app.services.progress import _streaks
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     days = [today, today - timedelta(days=1), today - timedelta(days=2), today - timedelta(days=5)]
     current, longest = _streaks(days)
     assert current == 3 and longest == 3
     assert _streaks([]) == (0, 0)
+    # a gap ending yesterday still counts as a current streak
+    assert _streaks([today - timedelta(days=2), today - timedelta(days=1)])[0] == 2
 
 
 # --------------------------------------------------------------- SM-2

@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { api } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
-import { copyToClipboard, formatMs } from "@/lib/utils";
+import { copyToClipboard, downloadBlob, formatMs } from "@/lib/utils";
 import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
 import { useStudyStore } from "@/store/useStudyStore";
@@ -16,8 +16,10 @@ import {
   Exam,
   GitCompare,
   NotePencil,
+  Refresh,
   Sparkle,
   Spinner,
+  UploadSimple,
   Warning,
 } from "@/components/ui/icons";
 import { AnswerText } from "./AnswerText";
@@ -71,6 +73,20 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
     }
   };
 
+  const downloadPdf = async () => {
+    if (!answer) return;
+    try {
+      const blob = await api.exportMarkdown({
+        format: "pdf",
+        title: answer.question.slice(0, 80),
+        markdown: `**Question:** ${answer.question}\n\n${answer.answer}`,
+      });
+      downloadBlob(blob, "studybuddy-answer.pdf");
+    } catch (err) {
+      toast.error("Couldn't make the PDF", err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="rounded-xl border border-line bg-surface-raised p-5 shadow-[0_1px_2px_rgb(var(--shadow)/0.04),0_18px_44px_-22px_rgb(var(--shadow)/0.16)]">
       {answer?.compareMode && (
@@ -84,6 +100,11 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
           title={answer?.retrievalNote}
         >
           <Sparkle className="h-3 w-3" weight="fill" /> {modeChip}
+        </p>
+      )}
+      {answer?.corrected && (
+        <p className="mb-3 inline-flex items-center gap-1.5 rounded-md bg-accent-soft px-2 py-1 text-2xs font-medium text-accent">
+          <Refresh className="h-3 w-3" weight="bold" /> correcting an earlier answer
         </p>
       )}
 
@@ -157,6 +178,12 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
                   className="flex items-center gap-1 transition-colors hover:text-content-primary disabled:opacity-50"
                 >
                   <NotePencil className="h-3 w-3" /> Save
+                </button>
+                <button
+                  onClick={downloadPdf}
+                  className="flex items-center gap-1 transition-colors hover:text-content-primary"
+                >
+                  <UploadSimple className="h-3 w-3 rotate-180" /> PDF
                 </button>
                 <button
                   onClick={async () => {

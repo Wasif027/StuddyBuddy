@@ -4,6 +4,7 @@ from app.routers.auth import router as auth_router
 from app.routers.categories import router as categories_router
 from app.routers.conversations import router as conversations_router
 from app.routers.documents import router as documents_router
+from app.routers.export import router as export_router
 from app.routers.health import router as health_router
 from app.routers.notes import router as notes_router
 from app.routers.practice import router as practice_router
@@ -16,6 +17,7 @@ __all__ = [
     "categories_router",
     "conversations_router",
     "documents_router",
+    "export_router",
     "health_router",
     "notes_router",
     "practice_router",

@@ -71,6 +71,7 @@ export interface AnswerResponse {
   confidenceLabel: ConfidenceLabel;
   insufficientEvidence: boolean;
   grounded: boolean;
+  corrected: boolean;
   compareMode: boolean;
   retrievalMode: RetrievalMode;
   retrievalNote: string;
@@ -133,8 +134,20 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
+export interface ChatContext {
+  summary: string;
+  topics: string[];
+  established: { fact?: string; source?: string; verified?: boolean }[];
+  studentClaims: { claim?: string; issue?: string }[];
+  corrections: { was?: string; now?: string }[];
+  misconceptions: string[];
+  observedLevel: string | null;
+}
+
 export interface ConversationDetail extends Conversation {
   messages: ConversationMessage[];
+  context: ChatContext;
+  attachedDocuments: string[];
 }
 
 /* ------------------------------------------------------------- categories */

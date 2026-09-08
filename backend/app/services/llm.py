@@ -56,6 +56,7 @@ class Synthesis:
     model: str = "offline-extractive"
     usage: dict = field(default_factory=dict)
     grounded: bool = True
+    corrected: bool = False
 
 
 # --------------------------------------------------------------------- prompts
@@ -89,7 +90,15 @@ _TUTOR_RULES = (
     "5. 'confidence' is your calibrated probability (0-1) the explanation is correct.\n"
     "6. 'citations' quote the exact sentence(s) from the cited passage you used.\n"
     "7. 'followUps' are up to 3 natural next things the student might want "
-    "(\"go deeper on X\", \"give me practice questions on Y\", \"explain Z more simply\")."
+    "(\"go deeper on X\", \"give me practice questions on Y\", \"explain Z more simply\").\n"
+    "8. If a CONVERSATION CONTEXT block is present, it is the running state of THIS "
+    "chat. Honour the student's course-specific definitions, notation, syllabus scope "
+    "and conventions listed there. But stay authoritative on facts: if the context "
+    "shows the student asserted something factually wrong, correct it kindly rather "
+    "than adopting it. If new information in the context means an EARLIER answer in "
+    "this chat was wrong or incomplete, open with a brief '↻ Correcting an earlier "
+    "answer:' and give the fixed version, and set 'corrected' true. Only do this for a "
+    "genuine conflict you're confident about — never invent a contradiction."
 )
 
 _COMPARE_RULES = (
@@ -123,6 +132,7 @@ _SCHEMA = {
         "answer": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "grounded": {"type": "boolean"},
+        "corrected": {"type": "boolean"},
         "citations": {
             "type": "array",
             "items": {
@@ -141,6 +151,7 @@ _SCHEMA = {
 _JSON_HINT = (
     '\n\nReturn ONLY a JSON object of this exact shape (no markdown fence):\n'
     '{"answer": string, "confidence": number 0-1, "grounded": boolean, '
+    '"corrected": boolean, '
     '"citations": [{"marker": integer, "quote": string}], "followUps": [string]}'
 )
 
@@ -170,16 +181,18 @@ def _prompt(
     level: str = "standard",
     student_level: str = "",
     history: str | None = None,
+    conversation_context: str = "",
 ) -> str:
     blocks = [
         f"[{p.marker}] {p.title}" + (f" — {p.heading}" if p.heading else "") + f"\n{p.text}"
         for p in passages
     ]
+    cc = f"CONVERSATION CONTEXT (running state of this chat):\n{conversation_context}\n\n" if conversation_context else ""
     head = f"{history}\n\n" if history else ""
     ctx = "\n\n---\n\n".join(blocks) if blocks else "(no passages retrieved from the student's materials)"
     who = _STUDENT_LEVELS.get(student_level, student_level)
     aud = f"The student is {who}. Pitch the content, examples and assumed background to that.\n" if who else ""
-    return f"{head}{aud}{_depth_instruction(level)}\n\nQuestion: {question}\n\nContext passages:\n\n{ctx}"
+    return f"{cc}{head}{aud}{_depth_instruction(level)}\n\nQuestion: {question}\n\nContext passages:\n\n{ctx}"
 
 
 # --------------------------------------------------------------------- offline
@@ -250,7 +263,7 @@ def _offline(
 
 
 # ------------------------------------------------------------------- providers
-def _anthropic(question, passages, system, level, student_level, history) -> Synthesis:  # pragma: no cover
+def _anthropic(question, passages, system, level, student_level, history, cc) -> Synthesis:  # pragma: no cover
     import anthropic
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -259,7 +272,8 @@ def _anthropic(question, passages, system, level, student_level, history) -> Syn
         max_tokens=settings.llm_max_tokens,
         system=system,
         messages=[{"role": "user", "content": _prompt(
-            question, passages, level=level, student_level=student_level, history=history)}],
+            question, passages, level=level, student_level=student_level,
+            history=history, conversation_context=cc)}],
         output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
     )
     text = next((b.text for b in resp.content if b.type == "text"), "{}")
@@ -272,7 +286,7 @@ def _anthropic(question, passages, system, level, student_level, history) -> Syn
     return _from_payload(data, provider="anthropic", model=settings.anthropic_model, usage=usage)
 
 
-def _openai(question, passages, system, level, student_level, history) -> Synthesis:  # pragma: no cover
+def _openai(question, passages, system, level, student_level, history, cc) -> Synthesis:  # pragma: no cover
     from openai import OpenAI
 
     base_url = settings.openai_base_url or None
@@ -292,7 +306,8 @@ def _openai(question, passages, system, level, student_level, history) -> Synthe
         messages=[
             {"role": "system", "content": system + _JSON_HINT},
             {"role": "user", "content": _prompt(
-                question, passages, level=level, student_level=student_level, history=history)},
+                question, passages, level=level, student_level=student_level,
+                history=history, conversation_context=cc)},
         ],
         response_format={"type": "json_object"},
         **extra,
@@ -337,6 +352,7 @@ def _from_payload(data: dict, *, provider: str, model: str, usage: dict) -> Synt
         model=model,
         usage=usage,
         grounded=bool(data.get("grounded", True)),
+        corrected=bool(data.get("corrected", False)),
     )
 
 
@@ -355,6 +371,7 @@ def synthesize(
     level: str = "standard",
     student_level: str = "",
     history: str | None = None,
+    conversation_context: str = "",
 ) -> Synthesis:
     if compare:
         system = _COMPARE_RULES
@@ -371,9 +388,9 @@ def synthesize(
         span.set_attribute("level", level)
         try:
             if settings.llm_provider == "anthropic" and settings.anthropic_api_key:
-                return _anthropic(question, passages, system, level, student_level, history)
+                return _anthropic(question, passages, system, level, student_level, history, conversation_context)
             if settings.llm_provider == "openai" and settings.openai_configured:
-                return _openai(question, passages, system, level, student_level, history)
+                return _openai(question, passages, system, level, student_level, history, conversation_context)
             degraded = False
         except Exception as exc:
             logger.warning("llm_synthesis_failed_falling_back", provider=settings.llm_provider, error=str(exc))
@@ -454,3 +471,74 @@ def json_complete(
 
 # Back-compat alias (older imports).
 _json_complete = json_complete
+
+
+# ------------------------------------------------ conversation working memory
+_CONTEXT_SYSTEM = (
+    "You maintain a compact running memory for one tutoring chat. Given the current "
+    "memory, the latest question and the tutor's answer, return the UPDATED memory.\n"
+    "Keep it small and factual:\n"
+    "- topics: 1-4 short phrases naming what this chat is about\n"
+    "- established: facts / definitions / notation the tutor and student are working "
+    "with. Each: {fact, source: 'student'|'material'|'standard', verified: bool}. "
+    "Mark verified=false for a student claim you can't confirm; verified=true for "
+    "standard knowledge or something the tutor stated. Keep at most ~8, most recent / "
+    "most load-bearing.\n"
+    "- student_claims: things the student asserted that look WRONG or dubious — "
+    "{claim, issue}. The tutor should correct these, not adopt them.\n"
+    "- corrections: {was, now} for any point the tutor has since corrected in this chat.\n"
+    "- observed_level: your read on the student's level if it's clearer than stated, else null.\n"
+    "- misconceptions: short phrases for confusions the student has shown.\n"
+    "- summary: 1-2 sentences a tutor could read to get back up to speed.\n"
+    "Do NOT invent facts. Prefer removing stale entries over letting it grow.\n"
+    'Return ONLY JSON with exactly those keys.'
+)
+
+
+def update_conversation_context(
+    prev: dict, question: str, answer: str, passages: list[ContextPassage] | None = None
+) -> dict:
+    """Refresh a chat's working memory after a turn. Falls back to ``prev`` offline / on error."""
+    if not provider_ready():
+        return prev or {}
+    src = ""
+    if passages:
+        src = "\n\nMaterials in play:\n" + "\n".join(f"- {p.title}: {p.text[:300]}" for p in passages[:4])
+    body = (
+        f"Current memory:\n{json.dumps(prev or {}, ensure_ascii=False)}\n\n"
+        f"Latest question: {question}\n\nTutor's answer:\n{answer[:2500]}{src}"
+    )
+    try:
+        data = json_complete(_CONTEXT_SYSTEM, body, max_tokens=900)
+    except Exception as exc:  # pragma: no cover - network
+        logger.warning("context_update_failed", error=str(exc))
+        return prev or {}
+    if not isinstance(data, dict):
+        return prev or {}
+    keep = ("topics", "established", "student_claims", "corrections", "observed_level",
+            "misconceptions", "summary")
+    return {k: data[k] for k in keep if k in data}
+
+
+def render_context(ctx: dict) -> str:
+    """Render a chat's working memory for injection into a generation prompt."""
+    if not ctx:
+        return ""
+    lines: list[str] = []
+    if ctx.get("summary"):
+        lines.append(str(ctx["summary"]))
+    if ctx.get("topics"):
+        lines.append("Topics: " + ", ".join(str(t) for t in ctx["topics"]))
+    for e in ctx.get("established", [])[:8]:
+        if isinstance(e, dict) and e.get("fact"):
+            tag = str(e.get("source", "")) + ("" if e.get("verified", True) else ", UNVERIFIED student claim")
+            lines.append(f"- {e['fact']}" + (f"  ({tag})" if tag.strip(", ") else ""))
+    for c in ctx.get("student_claims", [])[:4]:
+        if isinstance(c, dict) and c.get("claim"):
+            lines.append(f"- Student claimed (likely wrong — correct it): {c['claim']} — {c.get('issue', '')}")
+    for c in ctx.get("corrections", [])[:4]:
+        if isinstance(c, dict) and c.get("now"):
+            lines.append(f"- Already corrected earlier: was \"{c.get('was', '')}\", now \"{c['now']}\"")
+    if ctx.get("misconceptions"):
+        lines.append("Watch for these confusions: " + "; ".join(str(m) for m in ctx["misconceptions"]))
+    return "\n".join(lines).strip()

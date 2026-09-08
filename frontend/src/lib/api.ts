@@ -128,15 +128,43 @@ export const api = {
     request<DocumentRead[]>(`/documents${category ? `?category=${encodeURIComponent(category)}` : ""}`),
   getDocument: (id: string) => request<DocumentDetail>(`/documents/${id}`),
   deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: "DELETE" }),
-  ingestText: (b: { title: string; content: string; category?: string | null; sourceType?: string }) =>
-    request<IngestionResponse>("/documents", json(b)),
-  uploadDocument: (file: File, opts: { category?: string | null; title?: string; hint?: string } = {}) => {
+  ingestText: (b: {
+    title: string;
+    content: string;
+    category?: string | null;
+    sourceType?: string;
+    conversationId?: string | null;
+  }) => request<IngestionResponse>("/documents", json(b)),
+  uploadDocument: (
+    file: File,
+    opts: { category?: string | null; title?: string; hint?: string; conversationId?: string | null } = {},
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
     if (opts.category) fd.append("category", opts.category);
     if (opts.title) fd.append("title", opts.title);
     if (opts.hint) fd.append("hint", opts.hint);
+    if (opts.conversationId) fd.append("conversation_id", opts.conversationId);
     return request<IngestionResponse>("/documents/upload", { method: "POST", body: fd });
+  },
+
+  /* ---- export ---- */
+  async exportMarkdown(body: { format: "pdf" | "md"; title: string; markdown: string }): Promise<Blob> {
+    const res = await fetch(`${BASE}/export`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new ApiError(`export failed (${res.status})`, res.status);
+    return res.blob();
+  },
+  async exportPracticeSet(id: string, format: "pdf" | "md" = "pdf"): Promise<Blob> {
+    const res = await fetch(`${BASE}/export/practice/${id}?fmt=${format}`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new ApiError(`export failed (${res.status})`, res.status);
+    return res.blob();
   },
 
   /* ---- study guide ---- */

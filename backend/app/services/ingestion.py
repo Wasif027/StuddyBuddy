@@ -161,6 +161,7 @@ def ingest_content(
     source_type: str = "text",
     metadata: dict[str, Any] | None = None,
     slides: list[ParsedSlide] | None = None,
+    conversation_id: str | None = None,
 ) -> tuple[Document, int, bool]:
     started = time.perf_counter()
     content = content.strip()
@@ -179,6 +180,9 @@ def ingest_content(
         ).scalar_one_or_none()
         if existing:
             span.set_attribute("deduplicated", True)
+            if conversation_id and existing.conversation_id is None:
+                existing.conversation_id = conversation_id
+                db.commit()
             return existing, len(existing.chunks), True
 
         doc = Document(
@@ -191,6 +195,7 @@ def ingest_content(
             content_sha256=digest,
             char_count=len(content),
             metadata_json=metadata or {},
+            conversation_id=conversation_id,
         )
         db.add(doc)
         db.flush()

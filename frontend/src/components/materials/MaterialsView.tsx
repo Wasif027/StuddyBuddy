@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { DocumentRead, StudyGuideKind, StudyGuideResponse } from "@/lib/types";
-import { cn, formatRelativeTime } from "@/lib/utils";
+import { cn, downloadBlob, formatRelativeTime } from "@/lib/utils";
 import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
 import { useUIStore } from "@/store/useUIStore";
@@ -209,7 +209,26 @@ function MaterialDetail({
 
       {guide && (
         <div className="card mt-5 p-5">
-          <p className="label mb-3">{guide.title}</p>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="label">{guide.title}</p>
+            <button
+              onClick={async () => {
+                try {
+                  const blob = await api.exportMarkdown({
+                    format: "pdf",
+                    title: guide.title,
+                    markdown: guideToMarkdown(guide),
+                  });
+                  downloadBlob(blob, "studybuddy-study-guide.pdf");
+                } catch (err) {
+                  toast.error("Couldn't make the PDF", err instanceof Error ? err.message : String(err));
+                }
+              }}
+              className="btn btn-ghost h-7 px-2 text-2xs text-content-muted"
+            >
+              Download PDF
+            </button>
+          </div>
           {guide.markdown && <AnswerText text={guide.markdown} citations={[]} />}
           {guide.flashcards.length > 0 && (
             <div className="grid gap-2 sm:grid-cols-2">
@@ -243,6 +262,22 @@ function MaterialDetail({
       )}
     </>
   );
+}
+
+function guideToMarkdown(g: StudyGuideResponse): string {
+  if (g.markdown) return g.markdown;
+  if (g.flashcards.length) {
+    return g.flashcards.map((c, i) => `## ${i + 1}. ${c.front}\n\n${c.back}`).join("\n\n");
+  }
+  if (g.concepts.length) {
+    return g.concepts.map((n) => `${"  ".repeat(0)}- **${n.label}**${n.note ? ` — ${n.note}` : ""}`).join("\n");
+  }
+  if (g.keySlides.length) {
+    return g.keySlides
+      .map((s) => `## Slide ${s.index}${s.title ? ` — ${s.title}` : ""}\n\n${s.notes ?? ""}\n\n${s.bullets.map((b) => `- ${b}`).join("\n")}`)
+      .join("\n\n");
+  }
+  return "";
 }
 
 function Flashcard({ front, back, hint }: { front: string; back: string; hint: string | null }) {

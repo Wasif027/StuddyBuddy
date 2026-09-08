@@ -71,6 +71,8 @@ class AnswerResponse(APIModel):
     # (the tutor answered from general knowledge, or couldn't answer).
     insufficient_evidence: bool = False
     grounded: bool = False
+    # The tutor revised an earlier answer in this chat in light of new context.
+    corrected: bool = False
     compare_mode: bool = False
     retrieval_mode: RetrievalMode = "pinpoint"
     retrieval_note: str = ""
@@ -186,8 +188,22 @@ class ConversationRead(APIModel):
     updated_at: datetime
 
 
+class ChatContext(APIModel):
+    """The running "working memory" for a chat, surfaced to the user."""
+
+    summary: str = ""
+    topics: list[str] = Field(default_factory=list)
+    established: list[dict[str, Any]] = Field(default_factory=list)
+    student_claims: list[dict[str, Any]] = Field(default_factory=list)
+    corrections: list[dict[str, Any]] = Field(default_factory=list)
+    misconceptions: list[str] = Field(default_factory=list)
+    observed_level: str | None = None
+
+
 class ConversationDetail(ConversationRead):
     messages: list[MessageRead] = Field(default_factory=list)
+    context: ChatContext = Field(default_factory=ChatContext)
+    attached_documents: list[str] = Field(default_factory=list)
 
 
 class ConversationCreate(APIModel):
@@ -204,6 +220,7 @@ class IngestionRequest(APIModel):
     title: str = Field(..., min_length=1, max_length=512)
     category: str | None = Field(default=None, max_length=128)
     source_type: str = Field(default="text", max_length=64)
+    conversation_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -397,6 +414,13 @@ class SaveFromChatRequest(APIModel):
     message_id: str
     title: str | None = Field(default=None, max_length=300)
     category: str | None = Field(default=None, max_length=128)
+
+
+# ------------------------------------------------------------- export
+class ExportRequest(APIModel):
+    format: Literal["pdf", "md"] = "pdf"
+    title: str = Field(default="StudyBuddy", max_length=300)
+    markdown: str = Field(default="", max_length=200000)
 
 
 # ------------------------------------------------------------- progress

@@ -169,13 +169,26 @@ def _plan(db: Session, user: User, request: QueryRequest, rq: str) -> RetrievalP
 
 # ------------------------------------------------------------------- retrieval
 def _retrieve(
-    db: Session, user: User, request: QueryRequest, plan: RetrievalPlan, rq: str
+    db: Session,
+    user: User,
+    request: QueryRequest,
+    plan: RetrievalPlan,
+    rq: str,
+    *,
+    conversation_id: str | None = None,
 ) -> list[RetrievedChunk]:
     with _tracer.start_as_current_span("rag.retrieve") as span:
         span.set_attribute("plan.mode", plan.mode)
         compare_ids = request.compare_document_ids or None
         doc_scope = compare_ids or ([plan.document_id] if plan.document_id else None)
-        scope = Scope(user_id=user.id, category=request.category_id, document_ids=doc_scope)
+        scope = Scope(
+            user_id=user.id,
+            category=request.category_id,
+            document_ids=doc_scope,
+            # Materials attached to this chat are always in scope, on top of any
+            # category / document filter.
+            conversation_id=conversation_id if not compare_ids else None,
+        )
 
         if plan.mode == "document" and plan.document_id:
             results = fetch_document_chunks(db, plan.document_id, scope, plan.k)
@@ -372,7 +385,8 @@ def _assemble(
         id=answer_id, conversation_id=conv.id, message_id=message_id,
         question=request.question, answer=answer_text,
         confidence=confidence, confidence_label=label,  # type: ignore[arg-type]
-        insufficient_evidence=insufficient, grounded=grounded, compare_mode=compare,
+        insufficient_evidence=insufficient, grounded=grounded,
+        corrected=synth.corrected and not insufficient, compare_mode=compare,
         retrieval_mode=plan.mode, retrieval_note=plan.reason,
         explain_level=level,  # type: ignore[arg-type]
         citations=citations, source_chunks=source_chunks, follow_ups=synth.follow_ups,
@@ -389,6 +403,13 @@ def _assemble(
         )
     )
     conv.updated_at = datetime.now(UTC)
+    if plan.mode != "meta":
+        try:
+            conv.context_json = llm.update_conversation_context(
+                conv.context_json or {}, request.question, answer_text, passages
+            )
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("context_update_failed", error=str(exc))
     db.commit()
     return response
 
@@ -491,8 +512,11 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
 
         level = _resolve_level(db, user, request)
         student = _student_level(db, user, request)
+        # A chat with a running context evolves turn to turn — don't serve a
+        # cached answer that predates the current understanding.
+        cacheable = not (conv.context_json or {})
         key = _cache_key(user, request, level)
-        if not request.bypass_cache:
+        if cacheable and not request.bypass_cache:
             hit = cache.get_json(key)
             if hit:
                 hit["cached"] = True
@@ -509,16 +533,17 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
 
         rq = _contextual_query(request.question, history)
         plan = _plan(db, user, request, rq)
-        retrieved = _retrieve(db, user, request, plan, rq)
+        retrieved = _retrieve(db, user, request, plan, rq, conversation_id=conv.id)
         passages = _passages(retrieved)
         synth = llm.synthesize(
             request.question, passages,
             compare=bool(request.compare_document_ids), mode=plan.mode,
             level=level, student_level=student, history=_history_block(history),
+            conversation_context=llm.render_context(conv.context_json or {}),
         )
         latency_ms = (time.perf_counter() - started) * 1000
         response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan, level)
-        if not response.insufficient_evidence:
+        if cacheable and not response.insufficient_evidence:
             cache.set_json(key, response.model_dump(by_alias=True))
         span.set_attribute("confidence", response.confidence)
         return response
@@ -556,9 +581,10 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
 
     level = _resolve_level(db, user, request)
     student = _student_level(db, user, request)
+    cacheable = not (conv.context_json or {})
     rq = _contextual_query(request.question, history)
     plan = _plan(db, user, request, rq)
-    retrieved = _retrieve(db, user, request, plan, rq)
+    retrieved = _retrieve(db, user, request, plan, rq, conversation_id=conv.id)
     passages = _passages(retrieved)
     source_chunks = _source_chunks(retrieved)
     yield {
@@ -574,6 +600,7 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
         request.question, passages,
         compare=bool(request.compare_document_ids), mode=plan.mode,
         level=level, student_level=student, history=_history_block(history),
+        conversation_context=llm.render_context(conv.context_json or {}),
     )
 
     buf = ""
@@ -586,7 +613,7 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
 
     latency_ms = (time.perf_counter() - started) * 1000
     response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan, level)
-    if not response.insufficient_evidence and not request.bypass_cache:
+    if cacheable and not response.insufficient_evidence and not request.bypass_cache:
         cache.set_json(_cache_key(user, request, level), response.model_dump(by_alias=True))
     yield {"type": "final", "payload": response.model_dump(by_alias=True, mode="json")}
 
