@@ -2,11 +2,11 @@
   "name": "studybuddy",
   "version": "1.0.0",
   "private": true,
-  "description": "StudyBuddy — hybrid RAG with citations, confidence and controlled actions.",
+  "description": "StudyBuddy — an adaptive AI study tutor: grounded explanations, tiered practice questions, study guides and progress tracking.",
   "scripts": {
     "dev": "concurrently -k -n api,web -c yellow,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "cd backend && python -m uvicorn app.main:app --reload --port 8000",
-    "dev:web": "cd frontend && next dev",
+    "dev:web": "cd frontend && next dev -p 3000",
     "setup": "npm --prefix frontend ci && pip install -r backend/requirements.txt",
     "test": "npm --prefix frontend run typecheck && cd backend && python -m pytest",
     "lint": "npm --prefix frontend run lint && cd backend && ruff check app tests"

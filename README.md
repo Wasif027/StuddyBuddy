@@ -1,312 +1,169 @@
 # StudyBuddy
 
-*An enterprise knowledge & decision platform.*
+*An adaptive AI study tutor — grounded in your own notes.*
 
-Sign in, upload the files a business actually runs on — **PDF, Word, Excel,
-PowerPoint** (Google Sheets/Slides: use *File → Download*) — then ask questions
-in natural language. Every answer comes back with:
+Sign in, tell it what level you study at, and ask it to explain anything up to
+undergraduate level. It pitches the explanation to you and goes **simpler**,
+**deeper** or **exam-style** on request. Upload your notes, slides or a **photo**
+of a page and every explanation is grounded in them with citations back to the
+exact page or slide.
 
-- **an answer** grounded strictly in *your* documents,
-- **inline citations** (`[1]`, `[2]`) you click to jump to the exact passage,
-- **a confidence score** and label (`high` / `medium` / `low` / `insufficient`),
-- **the source passages** with per-retriever scores (vector / keyword),
-- **suggested next steps** — 0–4 concrete actions the answer implies, which you
-  **accept / reject / mark already done**. Nothing is executed; it's a decision
-  log. Reject one and the model proposes a different angle; every suggestion
-  you've ever been given lives in a searchable history that links back to the
-  chat message it came from.
+When you're ready to test yourself, it writes a practice set — **4 easy, 4
+medium, 2 hard and 1 very hard** question at your level — and marks your answers
+with feedback. It builds study guides, glossaries, concept maps and flashcards
+from any material, keeps a notes / learning log, turns a photo of your timetable
+into a structured schedule, and tracks your scores, streak and weak topics.
 
-**Query planning** picks the strategy per question:
-
-| Question | Strategy |
-| -------- | -------- |
-| "what's the returns window?" | pinpoint passage retrieval |
-| "summarise the monthly review deck" (or the ✦ button) | whole-document read |
-| "key points across all my documents" | wide, diversified scan |
-| "which candles are sold at a loss?" over a spreadsheet | **text-to-SQL** — the model writes a read-only `SELECT`, it runs against your sheets, and the **result table + the exact query** are shown in the reference panel |
-
-**Spreadsheets are data, not prose.** Totals, per-group aggregates, rankings,
-margins, trends, "which X is most/least …", multi-sheet joins — all computed and
-verifiable, with a chart when the shape fits. **Decks** are summarised slide by
-slide, and the data-rich slides (charts, tables, dense figures) are surfaced with
-their slide numbers.
-
-Plus **compare mode**: tick 2+ documents and the answer explicitly contrasts
-them ("the 2024 policy requires manager approval [1]; the 2026 policy requires VP
-approval [2]").
-
-Not a "PDF chatbot" — a retrieval + analytics + decision layer over your business
-knowledge.
+Not a "chat with a PDF" — a tutor, an assessment engine and a progress tracker
+over your own study materials.
 
 ---
 
-## The workspace
+## What it does
 
-```
-┌──────────────┬────────────────────────────────────┬────────────────────────┐
-│ CHATS        │            CONVERSATION             │  GROUNDING / NEXT STEPS │
-│ (auto-hide,  │                                    │                        │
-│  resizable)  │  You: a customer says their candle │        ◔  82           │
-│              │       arrived smashed — what do I   │    High confidence     │
-│ + New chat   │       do?                          │  ───────────────────   │
-│ · Returns Q  │                                    │  Next steps · 3        │
-│ · May sales  │  Offer a free replacement or a     │  ○ Email the customer  │
-│              │  full refund [1]. Ask for a photo  │    offering a refund   │
-│ ─────────    │  so we can claim it back [2].      │    [Accept][Reject]    │
-│ Knowledge    │                                    │      [Already done]    │
-│ base         │  ● High confidence · 2 cited       │  ○ Ask for a photo     │
-│ 📄 Returns   │  gemini-flash-lite · 4.1s          │  ○ Log the breakage    │
-│ 📊 Orders    │                                    │  ───────────────────   │
-│ [+ Add doc]  │  [ ask… ]  Skip-cache               │  [1] Returns policy p.1│
-└──────────────┴────────────────────────────────────┴────────────────────────┘
-```
-
-Warm-charcoal / ochre theme (light + dark), Geist type, ⌘K palette, streamed
-answers, auto-hiding + drag-resizable side panels.
+| Area | |
+| --- | --- |
+| **Adaptive tutoring** | Explanations pitched to your study level, with four depth modes (simple / standard / in-depth / exam). Follow-up chips. Greets you and asks what you're working on. |
+| **Grounded answers** | Retrieval over your uploaded materials — hybrid dense + sparse search, RRF, reranking. Inline `[n]` citations you click to jump to the source passage. A clear badge when an answer came from general knowledge instead. |
+| **Practice** | Generate an 11-question set (4/4/2/1) from a topic, a material, or the current chat. MCQ / short / numeric / true-false / explain. Deterministic marking where possible, model marking with partial credit + feedback for free text. Wrong answers seed a spaced-repetition schedule. |
+| **Study aids** | Per material: revision guide, glossary, one-page cheat sheet, concept map, flashcards, "most important slides". |
+| **Images** | Upload a photo — a diagram (explained part by part), a worked problem (full step-by-step solution), a page of notes, or a **timetable** (parsed into a day-by-day routine note). |
+| **Notes** | Save any explanation from chat, keep a learning log, edit in place, "quiz me on this note". |
+| **Progress** | Accuracy over time, study streak, per-difficulty breakdown, weak-topic detection with one-click practice, per-subject exam-readiness. |
+| **Organisation** | Per-user subjects you can add and rename, each with its own level override. |
 
 ---
 
 ## Stack
 
-| Layer          | Technology                                                              |
-| -------------- | --------------------------------------------------------------------- |
-| Frontend       | Next.js 14 (App Router), React 18, TypeScript (strict), Tailwind, Zustand |
-| Backend        | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2                        |
-| Auth           | Username + password, bcrypt hashing, JWT bearer tokens                |
-| Database       | PostgreSQL 16 + **pgvector** (HNSW) + full-text search                 |
-| Cache          | Redis (answer cache + rate limiting) — optional, degrades gracefully  |
-| AI             | Anthropic / any OpenAI-compatible endpoint (Gemini, Groq, Ollama) / offline fallback |
-| Ingestion      | `pypdf` · `python-docx` · `openpyxl` / `xlrd` · `python-pptx`          |
-| Retrieval      | Hybrid (dense + sparse) · Reciprocal Rank Fusion · reranking · query planning · compare mode |
-| Analytics      | **DuckDB** in-memory text-to-SQL over uploaded sheets (`pandas` frames, allowlisted read-only queries) |
-| Decisions      | LLM-proposed next steps → per-suggestion accept / reject / done log with deep-linked history |
-| Output         | Structured JSON (answer + citations + confidence + follow-ups + analysis block + suggestions) |
-| Observability  | OpenTelemetry traces, Prometheus metrics, structured JSON logs        |
-| Delivery       | Docker Compose, multi-stage images, GitHub Actions CI                 |
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js 14 (App Router), React 18, TypeScript (strict), Tailwind, Zustand |
+| Backend | Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2 |
+| Auth | Username + password, bcrypt, JWT bearer |
+| Database | PostgreSQL 16 + **pgvector** (HNSW) + full-text search |
+| Cache | Redis (answer cache + rate limiting) — optional, degrades gracefully |
+| AI | Anthropic / any OpenAI-compatible endpoint (Gemini, Groq, Ollama) / offline fallback. Optional `HARD_MODEL` for question generation + free-text grading. Vision for image uploads. |
+| Ingestion | `pypdf` · `python-docx` · `python-pptx` · `pillow` (image normalisation) |
+| Retrieval | Hybrid (dense + sparse) · Reciprocal Rank Fusion · reranking · query planning · compare mode |
+| Spaced repetition | SM-2 (`services/sm2.py`), the algorithm behind Anki, unit-tested |
+| Observability | OpenTelemetry traces, Prometheus metrics, structured JSON logs |
+
+Every account is its own workspace — materials, chats, notes and progress are
+private to you; a new account starts empty.
 
 ---
 
-## Accounts & data
+## Run it locally
 
-- On first visit you **create an account** (username + password — no email, this is a portfolio project).
-- **Every account is its own workspace**: your documents, chats and suggestions are private to you. There is no shared corpus — a new account starts empty.
-- Chats are persisted server-side; reload and your conversation history is restored. Start as many as you like, one per topic, like Claude.
-
----
-
-## Run it
-
-### One command — Docker (postgres + redis + backend + frontend + otel)
+### With Docker (postgres + redis + backend + frontend)
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-| Service       | URL                            |
-| ------------- | ------------------------------ |
-| Frontend      | http://localhost:3000          |
-| API + Swagger | http://localhost:8000/docs     |
-| Health        | http://localhost:8000/health   |
-| Metrics       | http://localhost:8000/metrics  |
+| Service | URL |
+| --- | --- |
+| Frontend | http://localhost:3000 |
+| API + Swagger | http://localhost:8000/docs |
+| Health | http://localhost:8000/health |
 
-With no keys the backend runs in **offline extractive mode**. Add a free Gemini
-key (see [`backend/.env.example`](backend/.env.example)) for real model answers.
-Open the frontend, create an account, add a document, ask.
+### Without Docker
 
-### One command — local, no Docker
-
-Needs a Postgres+pgvector database (a free [Neon](https://neon.tech) project
-works — put its URL in `backend/.env`). Once:
+You need a Postgres + pgvector database — a free [Neon](https://neon.tech)
+project works; put its URL in `backend/.env`. Once:
 
 ```bash
-npm install                          # root: installs `concurrently`
+npm install                                # root: installs `concurrently`
 pip install -r backend/requirements.txt
 npm --prefix frontend install
-python -m app.core.database init     # create tables (run from backend/)
+cp backend/.env.example backend/.env        # then set DATABASE_URL (+ optionally a Gemini key)
+cd backend && python -m app.core.database init && cd ..
 ```
 
 Then:
 
 ```bash
-npm run dev            # backend :8000 + frontend :3000 together
+npm run dev                                 # backend :8000 + frontend :3000 together
 ```
 
-**Windows / port 8000 blocked / spaces in the path** — use the PowerShell runner:
+Windows / port 8000 blocked:
 
 ```powershell
 ./dev.ps1 -ApiPort 8001
 ```
 
-**After any model / schema change**, rebuild the tables (destroys data):
+With no model key the backend runs in **offline mode**: retrieval, citations and
+the practice pipeline still work (template questions, keyword grading), only the
+explanation prose is extractive. Add a free Gemini key (see
+[`backend/.env.example`](backend/.env.example)) for real tutoring, model grading
+and image understanding.
 
-```bash
-cd backend && python -m app.core.database recreate
-```
-
-**Want a pre-filled demo account** for screenshots:
+**Pre-fill a demo account** for screenshots:
 
 ```bash
 cd backend && python -m app.seed --user demo --password demopass1
 ```
 
-**Deploying?** See [`DEPLOY.md`](DEPLOY.md) — platform-agnostic (any container
-host for the API, Vercel for the web app).
+**After a schema change** (rebuilds the tables — destroys data):
+
+```bash
+cd backend && python -m app.core.database recreate
+```
+
+---
+
+## API (all under `/api/v1`, camelCase JSON; bearer token required except `/health` and `/auth/*`)
+
+| Method & path | Purpose |
+| --- | --- |
+| `POST /auth/register` · `POST /auth/login` | create account / sign in → `{ token, user }` |
+| `GET /auth/me` · `PATCH /auth/me` | current user · update name / study level |
+| `GET/POST/PATCH/DELETE /categories` · `/categories/{id}` | subjects |
+| `GET/POST/PATCH/DELETE /conversations` · `/conversations/{id}` | chats |
+| `GET/POST/DELETE /documents` · `/documents/{id}` · `POST /documents/upload` | materials (`.pdf .docx .pptx` + images) |
+| `POST /query` | ask (JSON, or SSE when `stream=true`); accepts `conversationId`, `documentId`, `intent`, `explainLevel`, `compareDocumentIds` |
+| `POST /study-guide` | `{ documentId, kind }` — guide / glossary / cheatsheet / concept_map / flashcards / key_slides |
+| `GET/POST/DELETE /practice` · `/practice/{id}` · `POST /practice/{id}/questions/{n}/grade` | practice sets |
+| `GET/POST/PATCH/DELETE /notes` · `POST /notes/from-chat` · `POST /notes/{id}/quiz` | notes |
+| `GET /progress` | dashboard aggregations |
+
+Full request/response shapes: `http://localhost:8000/docs`.
 
 ---
 
 ## How a question is answered
 
 ```
-question (+ conversationId?, documentId?, intent?, compareDocumentIds?)
+question (+ conversationId?, documentId?, intent?, explainLevel?)
   │
-  ├─ resolve chat      : get or create the conversation, persist the user turn
-  │
-  ├─ contextualise    : an anaphoric follow-up ("and who books it?") folds the
-  │                      recent turns into the retrieval query + synthesis prompt
-  │
-  ├─ plan retrieval    : classify the question →
-  │     ├─ pinpoint    :   hybrid search + rerank, a few passages (default)
-  │     ├─ document    :   "summarise X" / a named doc → load ALL its chunks in order
-  │     ├─ overview    :   broad "key points across…" → wide scan, capped per document
-  │     └─ analysis    :   analytic question + a spreadsheet in scope → text-to-SQL:
-  │                          load sheets into DuckDB → LLM writes ONE read-only SELECT
-  │                          → allowlist + LIMIT + timeout → narrate the result table
-  │                          (+ a chart hint, + a light retrieval for supporting context)
-  │
-  ├─ embed             : openai-compatible | deterministic (offline)
-  │
-  ├─ hybrid retrieve   : scoped to THIS user (and to the compared/named documents,
-  │     ├─ dense       :   or a category, if set)
-  │     │  pgvector cosine, HNSW index
-  │     └─ sparse      : Postgres websearch_to_tsquery + ts_rank_cd (trigram fallback)
-  │     └─ fuse        : Reciprocal Rank Fusion
-  │
-  ├─ rerank            : blend of vector / keyword / term-coverage / heading / phrase
-  │
-  ├─ synthesize        : LLM with a strict JSON schema; a contrast prompt in compare mode
-  │                      → { answer, citations[{marker, quote}], confidence, followUps }
-  │
-  ├─ score confidence  : 0.45·LLM_self + 0.40·retrieval + 0.15·citation_coverage
-  │                      (clamped low when top evidence is weak → "insufficient")
-  │
-  ├─ suggest next steps : LLM proposes 0-4 concrete actions the answer implies
-  │                       (none for a pure lookup) → Suggestion rows, decision=pending
-  │
-  └─ persist           : answers + suggestions + the assistant message (chat history)
+  ├─ meta check       : greeting / "what can you do" / "what have I uploaded" → direct reply
+  ├─ resolve level    : per-turn override → subject level → account study level
+  ├─ contextualise    : an anaphoric follow-up folds recent turns into the retrieval query
+  ├─ plan retrieval   : pinpoint (default) | document (a named material / "summarise") |
+  │                     overview (broad "key points across…")
+  ├─ hybrid retrieve  : user-scoped — pgvector cosine (HNSW) + Postgres full-text, fused by RRF
+  ├─ rerank           : vector / keyword / term-coverage / heading / phrase blend
+  ├─ explain          : LLM, pitched to the student level + depth mode, strict JSON out
+  │                     → { answer, citations[{marker, quote}], confidence, grounded, followUps }
+  ├─ normalise cites  : renumber [n] in order, splice missing markers, drop strays
+  └─ persist          : answer + assistant message (chat history)
 ```
 
-Streaming (`stream=true`) emits SSE frames:
-`start → grounding → [analysis] → token* → [suggestions] → final`.
+Streaming (`stream=true`) emits SSE frames: `start → grounding → token* → final`.
 
 ---
 
-## API (all under `/api/v1`, camelCase JSON; bearer token required except `/health` and `/auth/*`)
-
-| Method & path                       | Purpose                                            |
-| ----------------------------------- | ------------------------------------------------- |
-| `POST /auth/register` · `POST /auth/login` | create account / sign in → `{ token, user }` |
-| `GET  /auth/me`                     | current user                                      |
-| `GET  /conversations`              | your chats (title, message count, last activity)  |
-| `POST /conversations` · `PATCH` · `DELETE /{id}` | create / rename / delete a chat      |
-| `GET  /conversations/{id}`         | one chat with its full message history            |
-| `GET  /health`                     | service + dependency + model status               |
-| `GET  /categories`                 | sidebar navigator (counts + status per category)  |
-| `GET/POST /documents` · `GET/DELETE /documents/{id}` | your documents                   |
-| `POST /documents/upload`           | upload `.pdf` `.docx` `.xlsx` / `.xls` `.pptx`     |
-| `POST /query`                      | ask (JSON, or SSE when `stream=true`); accepts `conversationId`, `documentId`, `intent` (`auto` / `summary` / `analysis`), `compareDocumentIds`, `suggest` |
-| `GET  /suggestions?status=`        | every next-step suggestion (history), with a `conversationDeleted` flag |
-| `POST /suggestions/{id}/decide`    | `{ decision: accept \| reject \| done, note? }` — reject may return an `alternative` |
-
-Full request/response shapes: `http://localhost:8000/docs`.
-
----
-
-## Configuration
-
-Env-driven. See [`backend/.env.example`](backend/.env.example). The switches that matter:
-
-| Variable             | Default              | Effect                                            |
-| -------------------- | -------------------- | ------------------------------------------------ |
-| `JWT_SECRET`         | dev placeholder      | **set a 32+ char random value in production**     |
-| `LLM_PROVIDER`       | `offline`            | `anthropic` \| `openai` \| `offline` (free)       |
-| `OPENAI_BASE_URL`    | —                    | point `openai` at any compatible endpoint         |
-| `EMBEDDING_PROVIDER` | `deterministic`      | `openai` for real (semantic) embeddings           |
-| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | —       | embeddings can use a different provider than chat  |
-| `RERANK_ENABLED`     | `true`               | toggle the reranking pass                          |
-| `SUGGESTIONS_ENABLED` | `true`              | generate next-step suggestions after each answer  |
-
-**Free model options** — the `openai` provider drives any OpenAI-compatible endpoint. Set `LLM_PROVIDER=openai` plus:
-
-| Provider | `OPENAI_BASE_URL` | `OPENAI_MODEL` | embeddings |
-| -------- | ----------------- | -------------- | ---------- |
-| Gemini (recommended) | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-flash-lite-latest` | `gemini-embedding-001` (same key) |
-| Groq | `https://api.groq.com/openai/v1` | `openai/gpt-oss-20b` | (use Gemini or deterministic) |
-| Ollama (local, no key) | `http://localhost:11434/v1` | `llama3.1` | `nomic-embed-text` |
-
-Default `offline` mode still returns citations, confidence and passages — only
-the answer *prose* is extractive rather than model-written, retrieval is
-keyword-only without semantic embeddings, and spreadsheet analytics + next-step
-suggestions (both need a model) are skipped gracefully.
-
----
-
-## Tests & CI
+## Tests
 
 ```bash
-cd backend && python -m pytest        # unit always; API/integration if Postgres reachable
+cd backend && python -m pytest        # unit always; API tests if Postgres reachable
 cd frontend && npm run lint && npm run typecheck && npm run build
 ```
 
-`.github/workflows/ci.yml` runs the backend suite against a
-`pgvector/pgvector:pg16` service, the frontend lint/typecheck/build, then builds
-the Docker images and probes `/health` on a booted stack.
-
 ---
-
-## Project layout
-
-```
-backend/app/
-  core/       config · database (pgvector, recreate) · cache (redis) · logging
-              · telemetry · security (bcrypt + JWT) · deps (current-user)
-  models/     orm.py — users · conversations · messages · documents · chunks
-              · document_tables · document_slides · answers · suggestions
-              schemas.py (Pydantic, camelCase — incl. AnalysisBlock / SuggestionRead)
-  services/   embeddings · chunking · vectorstore (user-scoped hybrid) · reranker
-              · parsing / xlsx_parse / pptx_parse (upload → text + tables + slides)
-              · query_planner (pinpoint / document / overview / analysis routing)
-              · analysis (DuckDB text-to-SQL) · llm (synthesis + SQL-gen + narration
-              + next-step suggestions) · suggestions (serialiser) · rag (orchestration)
-              · ingestion
-  routers/    auth · conversations · health · categories · documents · retrieval
-              · suggestions
-  seed.py     optional demo corpus for a throwaway account
-frontend/src/
-  lib/        api (bearer + 401) · auth (token) · stream (SSE) · types · utils
-  store/      useAuthStore · useAppStore (chats + compare) · useUIStore (panels) · useToast
-  components/ auth · layout (LeftDock auto-hide, ResizeHandle, TopBar, CommandPalette)
-              · sidebar (ConversationList, KnowledgeBase, IngestDialog)
-              · grounding (RightPanel, PassageCard, AnalysisCard, DataTable, ResultChart)
-              · suggestions (SuggestionCard) · history (SuggestionsHistory)
-              · chat · ui · providers
-infra/  ·  docker-compose.yml  ·  dev.ps1  ·  Makefile  ·  .github/workflows/ci.yml
-```
-
----
-
-## Production notes / upgrade paths
-
-- **Migrations** — `create_all` for dev; wire Alembic for prod (`alembic` is a dependency).
-- **Auth** — JWT + bcrypt are implemented and every data route is user-scoped.
-  Not yet: refresh tokens, password reset, email verification, rate-limited login.
-- **Reranker** — swap the heuristic in `services/reranker.py` for a hosted
-  cross-encoder (Cohere Rerank, `bge-reranker`) behind the same interface.
-- **Suggestions → real actions** — an accepted suggestion is just a logged
-  decision today. Wiring "accepted" items to Jira / a mailer / Slack (behind the
-  same accept gate) is a clean next step.
-- **Tracing** — set `OTLP_ENDPOINT`; add a Tempo/Jaeger exporter to the collector.
 
 ## License
 
-MIT — portfolio / internal-use demonstration.
+MIT — portfolio / demonstration project.

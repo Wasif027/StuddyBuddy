@@ -1,10 +1,10 @@
 # =============================================================================
 # StudyBuddy — full stack
 # =============================================================================
-#   postgres        Postgres 16 + pgvector (documents, chunks, answers, suggestions)
+#   postgres        Postgres 16 + pgvector (materials, chunks, practice, notes…)
 #   redis           answer cache + rate limiting
-#   backend         FastAPI — ingestion, hybrid RAG, spreadsheet analytics
-#   frontend        Next.js analyst workspace
+#   backend         FastAPI — tutor RAG, assessment, study guides, vision, progress
+#   frontend        Next.js study app
 #   otel-collector  OpenTelemetry traces/metrics (stdout in dev)
 #
 #   docker compose up --build
