@@ -14,7 +14,12 @@ interface AuthState {
   error: string | null;
   bootstrap: () => Promise<void>;
   login: (username: string, password: string) => Promise<boolean>;
-  register: (username: string, password: string, displayName?: string) => Promise<boolean>;
+  register: (
+    username: string,
+    password: string,
+    opts?: { displayName?: string; studyLevel?: string },
+  ) => Promise<boolean>;
+  patchUser: (u: User) => void;
   logout: () => void;
   clearError: () => void;
 }
@@ -50,10 +55,10 @@ export const useAuthStore = create<AuthState>((set) => {
       }
     },
 
-    async register(username, password, displayName) {
+    async register(username, password, opts) {
       set({ error: null });
       try {
-        const res = await api.register({ username: username.trim(), password, displayName });
+        const res = await api.register({ username: username.trim(), password, ...opts });
         setToken(res.token);
         set({ user: res.user, status: "authed" });
         return true;
@@ -62,6 +67,8 @@ export const useAuthStore = create<AuthState>((set) => {
         return false;
       }
     },
+
+    patchUser: (user) => set({ user }),
 
     logout() {
       setToken(null);

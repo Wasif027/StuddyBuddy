@@ -5,8 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/useUIStore";
 import { CollapseLeft, PushPin } from "@/components/ui/icons";
+import { ChatMaterials } from "@/components/sidebar/ChatMaterials";
 import { ConversationList } from "@/components/sidebar/ConversationList";
-import { KnowledgeBase } from "@/components/sidebar/KnowledgeBase";
 import { ResizeHandle } from "./ResizeHandle";
 
 export function LeftDock() {
@@ -22,9 +22,12 @@ export function LeftDock() {
     if (closeTimer.current) clearTimeout(closeTimer.current);
     closeTimer.current = setTimeout(() => setHovering(false), 450);
   };
-  useEffect(() => () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
 
   const panel = (
     <div className="flex h-full flex-col overflow-hidden bg-surface-raised">
@@ -46,8 +49,8 @@ export function LeftDock() {
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <ConversationList />
         </div>
-        <div className="max-h-[52%] shrink-0 overflow-y-auto">
-          <KnowledgeBase />
+        <div className="max-h-[48%] shrink-0 overflow-y-auto">
+          <ChatMaterials />
         </div>
       </div>
     </div>
@@ -66,7 +69,6 @@ export function LeftDock() {
 
   return (
     <>
-      {/* always-visible hover strip */}
       <div
         onMouseEnter={openOverlay}
         onMouseLeave={scheduleClose}
@@ -74,15 +76,13 @@ export function LeftDock() {
       >
         <div className="absolute inset-y-0 left-0 w-0.5 bg-transparent transition-colors group-hover:bg-accent" />
       </div>
-
-      {/* sliding overlay */}
       <div
         onMouseEnter={openOverlay}
         onMouseLeave={scheduleClose}
         style={{ width: leftWidth }}
         className={cn(
-          "absolute inset-y-0 left-2 z-panel border-r border-line shadow-pop transition-transform duration-200 ease-spring",
-          hovering ? "translate-x-0" : "-translate-x-[calc(100%+0.75rem)]",
+          "absolute inset-y-0 left-16 z-panel border-r border-line shadow-pop transition-transform duration-200 ease-spring",
+          hovering ? "translate-x-0" : "-translate-x-[calc(100%+4.75rem)]",
         )}
       >
         {panel}

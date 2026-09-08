@@ -74,7 +74,7 @@ export function ConversationView() {
           >
             <div className="flex items-center gap-2 pl-1">
               <span className="h-1 w-1 rounded-full bg-accent" />
-              <span className="label">Grounded answer</span>
+              <span className="label">StudyBuddy</span>
             </div>
             <AnswerCard message={m} />
           </div>

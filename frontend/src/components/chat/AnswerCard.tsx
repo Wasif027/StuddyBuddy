@@ -2,19 +2,35 @@
 
 import { useState } from "react";
 
+import { api } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
-import { cn, copyToClipboard, formatMs } from "@/lib/utils";
+import { copyToClipboard, formatMs } from "@/lib/utils";
 import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
-import { ConfidenceBadge } from "@/components/ui/ConfidenceGauge";
-import { ArrowElbowDownRight, ChartBar, Check, Copy, GitCompare, Sparkle, Spinner, Warning } from "@/components/ui/icons";
+import { useStudyStore } from "@/store/useStudyStore";
+import {
+  ArrowElbowDownRight,
+  BookOpen,
+  Check,
+  Copy,
+  Exam,
+  GitCompare,
+  NotePencil,
+  Sparkle,
+  Spinner,
+  Warning,
+} from "@/components/ui/icons";
 import { AnswerText } from "./AnswerText";
 
 export function AnswerCard({ message }: { message: ChatMessage }) {
   const highlightChunk = useAppStore((s) => s.highlightChunk);
   const ask = useAppStore((s) => s.ask);
   const streaming = useAppStore((s) => s.streaming);
+  const activeId = useAppStore((s) => s.activeId);
+  const generate = useStudyStore((s) => s.generatePracticeSet);
+  const generating = useStudyStore((s) => s.generating);
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
   const answer = message.answer;
 
   const onCite = (marker: number) => {
@@ -26,7 +42,7 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
     return (
       <div className="card border-danger/35 bg-danger/6 p-4">
         <p className="flex items-center gap-2 text-sm font-medium text-danger">
-          <Warning className="h-4 w-4" weight="fill" /> Could not answer
+          <Warning className="h-4 w-4" weight="fill" /> Something went wrong
         </p>
         <p className="mt-1.5 text-xs leading-relaxed text-content-secondary">{message.error}</p>
       </div>
@@ -34,39 +50,43 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
   }
 
   const skeleton = message.pending && !message.content;
+  const isMeta = answer?.retrievalMode === "meta";
+  const modeChip =
+    answer && !isMeta && answer.retrievalMode === "document"
+      ? "full read of your material"
+      : answer?.retrievalMode === "overview"
+        ? "across your materials"
+        : null;
+
+  const saveNote = async () => {
+    if (!answer?.messageId) return;
+    setSaving(true);
+    try {
+      await api.saveFromChat({ messageId: answer.messageId });
+      toast.success("Saved to notes");
+    } catch (err) {
+      toast.error("Couldn't save", err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="rounded-xl border border-line bg-surface-raised p-5 shadow-[0_1px_2px_rgb(var(--shadow)/0.04),0_18px_44px_-22px_rgb(var(--shadow)/0.16)]">
       {answer?.compareMode && (
         <p className="mb-3 inline-flex items-center gap-1.5 rounded-md bg-accent-soft px-2 py-1 text-2xs font-medium text-accent">
-          <GitCompare className="h-3 w-3" weight="fill" /> comparing documents
+          <GitCompare className="h-3 w-3" weight="fill" /> comparing materials
         </p>
       )}
-      {answer && !answer.compareMode && answer.retrievalMode !== "pinpoint" && answer.retrievalMode !== "meta" && (
+      {modeChip && (
         <p
-          className={cn(
-            "mb-3 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-2xs font-medium",
-            answer.retrievalMode === "analysis"
-              ? "bg-accent-soft text-accent"
-              : "bg-surface-sunken text-content-secondary",
-          )}
-          title={answer.retrievalNote}
+          className="mb-3 inline-flex items-center gap-1.5 rounded-md bg-surface-sunken px-2 py-1 text-2xs font-medium text-content-secondary"
+          title={answer?.retrievalNote}
         >
-          {answer.retrievalMode === "analysis" ? (
-            <ChartBar className="h-3 w-3" weight="fill" />
-          ) : (
-            <Sparkle className="h-3 w-3" weight="fill" />
-          )}
-          {answer.retrievalMode === "analysis"
-            ? "computed answer"
-            : answer.retrievalMode === "document"
-              ? "full-document read"
-              : "broad scan"}
-          {answer.retrievalMode === "analysis" && answer.analysis?.tablesUsed?.length
-            ? ` · ${answer.analysis.tablesUsed.join(", ")}`
-            : ""}
+          <Sparkle className="h-3 w-3" weight="fill" /> {modeChip}
         </p>
       )}
+
       {skeleton ? (
         <div className="space-y-2.5">
           <div className="skeleton h-3 w-2/3" />
@@ -74,7 +94,7 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
           <div className="skeleton h-3 w-11/12" />
           <div className="skeleton h-3 w-4/5" />
           <p className="flex items-center gap-1.5 pt-1 text-2xs text-content-muted">
-            <Spinner className="h-3 w-3 animate-spin" /> retrieving &amp; reranking passages
+            <Spinner className="h-3 w-3 animate-spin" /> reading your materials
           </p>
         </div>
       ) : (
@@ -88,10 +108,10 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
 
       {answer && !message.pending && (
         <>
-          {answer.insufficientEvidence && (
+          {!isMeta && !answer.grounded && !answer.insufficientEvidence && (
             <p className="mt-3.5 flex items-start gap-2 rounded-md border border-caution/25 bg-caution/8 p-2.5 text-2xs leading-relaxed text-caution">
-              <Warning className="mt-px h-3 w-3 shrink-0" weight="fill" />
-              Thin evidence in your documents — double-check this, or add a document that covers it.
+              <BookOpen className="mt-px h-3 w-3 shrink-0" weight="fill" />
+              Answered from general knowledge — this isn&apos;t from your uploaded materials.
             </p>
           )}
 
@@ -101,7 +121,7 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
                 <button
                   key={f}
                   disabled={streaming}
-                  onClick={() => ask(f, {})}
+                  onClick={() => ask(f)}
                   className="chip transition-[border-color,color] hover:border-accent/50 hover:text-accent disabled:opacity-50"
                 >
                   <ArrowElbowDownRight className="h-3 w-3" />
@@ -111,38 +131,55 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
             </div>
           )}
 
-          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-2xs text-content-muted">
-            {answer.retrievalMode !== "meta" && (
-              <>
-                <ConfidenceBadge value={answer.confidence} label={answer.confidenceLabel} />
-                <span className="tnum">{answer.citations.length} cited</span>
-                <span aria-hidden>·</span>
-              </>
-            )}
-            <span className="font-mono">{answer.model}</span>
-            <span aria-hidden>·</span>
-            <span className="tnum">{formatMs(answer.latencyMs)}</span>
-            {answer.cached && <span className="chip py-0.5">cached</span>}
-            <button
-              onClick={async () => {
-                if (await copyToClipboard(toMarkdown(message))) {
-                  setCopied(true);
-                  toast.success("Copied as Markdown");
-                  setTimeout(() => setCopied(false), 1400);
-                }
-              }}
-              className="ml-auto flex items-center gap-1 transition-colors hover:text-content-primary"
-            >
-              {copied ? <Check className="h-3 w-3" weight="bold" /> : <Copy className="h-3 w-3" />}
-              Copy
-            </button>
-          </div>
+          {!isMeta && (
+            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-3 text-2xs text-content-muted">
+              {answer.grounded && (
+                <span className="inline-flex items-center gap-1 font-medium text-positive">
+                  <Check className="h-3 w-3" weight="bold" /> {answer.citations.length} from your notes
+                </span>
+              )}
+              <span className="chip py-0.5 capitalize">{answer.explainLevel}</span>
+              <span className="font-mono">{answer.model}</span>
+              <span className="tnum">{formatMs(answer.latencyMs)}</span>
+              {answer.cached && <span className="chip py-0.5">cached</span>}
+
+              <div className="ml-auto flex items-center gap-3">
+                <button
+                  onClick={() => generate({ conversationId: activeId ?? undefined, topic: answer.question })}
+                  disabled={generating || streaming}
+                  className="flex items-center gap-1 transition-colors hover:text-accent disabled:opacity-50"
+                >
+                  <Exam className="h-3 w-3" /> Practice this
+                </button>
+                <button
+                  onClick={saveNote}
+                  disabled={saving}
+                  className="flex items-center gap-1 transition-colors hover:text-content-primary disabled:opacity-50"
+                >
+                  <NotePencil className="h-3 w-3" /> Save
+                </button>
+                <button
+                  onClick={async () => {
+                    if (await copyToClipboard(toMarkdown(message))) {
+                      setCopied(true);
+                      toast.success("Copied as Markdown");
+                      setTimeout(() => setCopied(false), 1400);
+                    }
+                  }}
+                  className="flex items-center gap-1 transition-colors hover:text-content-primary"
+                >
+                  {copied ? <Check className="h-3 w-3" weight="bold" /> : <Copy className="h-3 w-3" />}
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
 
       {message.pending && message.content && (
         <p className="mt-2.5 flex items-center gap-1.5 text-2xs text-content-muted">
-          <Spinner className="h-3 w-3 animate-spin" /> streaming
+          <Spinner className="h-3 w-3 animate-spin" /> writing
         </p>
       )}
     </div>
@@ -152,6 +189,8 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
 function toMarkdown(m: ChatMessage): string {
   const a = m.answer;
   if (!a) return m.content;
-  const cites = a.citations.map((c) => `[${c.marker}] ${c.title}${c.quote ? ` — "${c.quote}"` : ""}`).join("\n");
-  return `**Q:** ${a.question}\n\n${a.answer}\n\n---\n**Confidence:** ${(a.confidence * 100).toFixed(0)}% (${a.confidenceLabel})  ·  **Model:** ${a.model}\n\n**Sources**\n${cites}`;
+  const cites = a.citations
+    .map((c) => `[${c.marker}] ${c.title}${c.quote ? ` — "${c.quote}"` : ""}`)
+    .join("\n");
+  return `**Q:** ${a.question}\n\n${a.answer}${cites ? `\n\n---\n**Sources**\n${cites}` : ""}`;
 }

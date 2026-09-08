@@ -8,13 +8,13 @@ import { Providers } from "@/components/providers/Providers";
 export const metadata: Metadata = {
   title: "StudyBuddy",
   description:
-    "Grounded RAG over your business documents — cited answers, spreadsheet analytics and an AI next-step decision log.",
+    "An adaptive AI study tutor — grounded explanations from your own notes, tiered practice questions with grading, study guides, and progress tracking.",
   applicationName: "StudyBuddy",
   icons: { icon: "/favicon.svg" },
   openGraph: {
     title: "StudyBuddy",
     description:
-      "Upload PDFs, Word docs, spreadsheets and decks — ask questions and get answers with citations, run calculations over your data, and track the next steps an answer implies.",
+      "Upload your notes, slides or a photo of a problem. Get explanations pitched to your level, practice questions that mark themselves, study guides, and a progress dashboard.",
     type: "website",
   },
 };

@@ -2,11 +2,21 @@
 
 import { useState } from "react";
 
+import { STUDY_LEVELS } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/useAuthStore";
-import { Spinner } from "@/components/ui/icons";
+import { GraduationCap, Spinner } from "@/components/ui/icons";
 
 type Mode = "choose" | "register" | "login";
+
+const LEVEL_LABEL: Record<string, string> = {
+  "year-8": "Year 8 / Middle school",
+  gcse: "GCSE",
+  "high-school": "High school",
+  "a-level": "A-level",
+  ib: "IB",
+  undergraduate: "Undergraduate",
+};
 
 export function AuthScreen() {
   const login = useAuthStore((s) => s.login);
@@ -18,6 +28,7 @@ export function AuthScreen() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [level, setLevel] = useState<string>("high-school");
   const [busy, setBusy] = useState(false);
 
   const go = (m: Mode) => {
@@ -33,7 +44,9 @@ export function AuthScreen() {
     }
     setBusy(true);
     const ok =
-      mode === "register" ? await register(username, password) : await login(username, password);
+      mode === "register"
+        ? await register(username, password, { studyLevel: level })
+        : await login(username, password);
     setBusy(false);
     if (!ok) setPassword("");
   };
@@ -44,20 +57,17 @@ export function AuthScreen() {
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
-          background:
-            "radial-gradient(50% 55% at 50% 0%, rgb(var(--accent) / 0.10), transparent 70%)",
+          background: "radial-gradient(50% 55% at 50% 0%, rgb(var(--accent) / 0.10), transparent 70%)",
         }}
       />
-      <div className="relative w-full max-w-[22rem]">
+      <div className="relative w-full max-w-[22rem] above-grain">
         <div className="mb-7 text-center">
-          <span className="mx-auto mb-3 grid h-9 w-9 place-items-center rounded-[10px] bg-content-primary text-sm font-bold text-surface-raised">
-            K
+          <span className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-[11px] bg-accent text-accent-contrast">
+            <GraduationCap className="h-5 w-5" weight="fill" />
           </span>
-          <h1 className="text-lg font-semibold tracking-tight text-content-primary">
-            Knowledge &amp; Decision Platform
-          </h1>
+          <h1 className="text-lg font-semibold tracking-tight text-content-primary">StudyBuddy</h1>
           <p className="mt-1 text-xs text-content-muted">
-            Grounded answers over your own documents.
+            Your AI study tutor — grounded in your own notes.
           </p>
         </div>
 
@@ -111,17 +121,33 @@ export function AuthScreen() {
               />
             </label>
             {mode === "register" && (
-              <label className="block">
-                <span className="label mb-1 block">Confirm password</span>
-                <input
-                  type="password"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  autoComplete="new-password"
-                  required
-                  className="input"
-                />
-              </label>
+              <>
+                <label className="block">
+                  <span className="label mb-1 block">Confirm password</span>
+                  <input
+                    type="password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                    className="input"
+                  />
+                </label>
+                <label className="block">
+                  <span className="label mb-1 block">What level are you studying at?</span>
+                  <select value={level} onChange={(e) => setLevel(e.target.value)} className="input">
+                    {STUDY_LEVELS.map((l) => (
+                      <option key={l} value={l}>
+                        {LEVEL_LABEL[l] ?? l}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="mt-1 block text-[0.6rem] text-content-muted">
+                    Explanations and question difficulty start here — you can change it anytime, or
+                    per subject.
+                  </span>
+                </label>
+              </>
             )}
 
             {error && (
@@ -146,8 +172,8 @@ export function AuthScreen() {
         )}
 
         <p className="mt-5 text-center text-[0.6rem] leading-relaxed text-content-muted">
-          A portfolio project — username &amp; password only, no email. Your documents and chats are
-          private to your account.
+          A portfolio project — username &amp; password only, no email. Your materials, chats and
+          progress are private to your account.
         </p>
       </div>
     </div>
