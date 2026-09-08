@@ -156,6 +156,56 @@ def test_slugify_and_defaults():
     assert {"mathematics", "physics", "general"} <= slugs
 
 
+# --------------------------------------------------------------- assessment
+def test_deterministic_grade_mcq_and_numeric():
+    from app.models.orm import Question, QuestionTier, QuestionType
+    from app.services.assessment import _deterministic_grade
+
+    mcq = Question(
+        index=0, tier=QuestionTier.EASY, qtype=QuestionType.MCQ,
+        prompt="2+2?", options_json=["3", "4", "5"], answer="4", rubric="",
+    )
+    score, _ = _deterministic_grade(mcq, "", option_index=1)
+    assert score == 1.0
+    score, _ = _deterministic_grade(mcq, "", option_index=0)
+    assert score == 0.0
+
+    num = Question(
+        index=1, tier=QuestionTier.MEDIUM, qtype=QuestionType.NUMERIC,
+        prompt="speed?", options_json=[], answer="9.8 m/s^2", rubric="",
+    )
+    assert _deterministic_grade(num, "9.8", None)[0] == 1.0
+    assert _deterministic_grade(num, "12", None)[0] == 0.0
+
+    explain = Question(
+        index=2, tier=QuestionTier.HARD, qtype=QuestionType.EXPLAIN,
+        prompt="why?", options_json=[], answer="model answer", rubric="",
+    )
+    assert _deterministic_grade(explain, "some text", None) is None  # needs a grader
+
+
+def test_offline_question_set_has_correct_shape():
+    from app.services.assessment import _TOTAL, _offline_questions, _tier_sequence
+
+    qs = _offline_questions("photosynthesis", "Light is absorbed by chlorophyll. "
+                            "Water is split in the light reactions. Glucose is made in the Calvin cycle.")
+    assert len(qs) == _TOTAL
+    assert [q["tier"] for q in qs] == _tier_sequence()
+
+
+# --------------------------------------------------------------- progress
+def test_progress_streaks():
+    from datetime import date, timedelta
+
+    from app.services.progress import _streaks
+
+    today = date.today()
+    days = [today, today - timedelta(days=1), today - timedelta(days=2), today - timedelta(days=5)]
+    current, longest = _streaks(days)
+    assert current == 3 and longest == 3
+    assert _streaks([]) == (0, 0)
+
+
 # --------------------------------------------------------------- SM-2
 def test_sm2_schedule_progression():
     from app.services.sm2 import schedule

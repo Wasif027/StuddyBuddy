@@ -369,7 +369,7 @@ class NoteRead(APIModel):
     kind: NoteKindValue
     title: str
     body_md: str = ""
-    structured: dict[str, Any] = Field(default_factory=dict, alias="structuredJson")
+    structured: dict[str, Any] = Field(default_factory=dict)
     source: str = "manual"
     source_ref: str | None = None
     pinned: bool = False

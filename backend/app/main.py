@@ -20,7 +20,11 @@ from app.routers import (
     conversations_router,
     documents_router,
     health_router,
+    notes_router,
+    practice_router,
+    progress_router,
     retrieval_router,
+    study_guide_router,
 )
 
 settings = get_settings()
@@ -108,6 +112,10 @@ def create_app() -> FastAPI:
     app.include_router(categories_router, prefix=prefix)
     app.include_router(documents_router, prefix=prefix)
     app.include_router(retrieval_router, prefix=prefix)
+    app.include_router(practice_router, prefix=prefix)
+    app.include_router(study_guide_router, prefix=prefix)
+    app.include_router(notes_router, prefix=prefix)
+    app.include_router(progress_router, prefix=prefix)
 
     @app.get("/", include_in_schema=False)
     async def root():
