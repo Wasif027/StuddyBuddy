@@ -9,7 +9,7 @@
  */
 import type { StreamEvent } from "./types";
 
-const KNOWN = new Set(["start", "grounding", "token", "analysis", "suggestions", "final", "error"]);
+const KNOWN = new Set(["start", "grounding", "token", "final", "error"]);
 
 export async function consumeSSE(
   res: Response,

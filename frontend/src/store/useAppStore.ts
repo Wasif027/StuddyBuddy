@@ -4,29 +4,29 @@ import { create } from "zustand";
 
 import { api, ApiError } from "@/lib/api";
 import type {
-  AnalysisBlock,
   AnswerResponse,
+  Category,
   ChatMessage,
   Conversation,
   ConversationMessage,
-  DocumentCategory,
   DocumentRead,
+  ExplainLevel,
   HealthResponse,
   SourceChunk,
-  Suggestion,
 } from "@/lib/types";
 import { toast } from "./useToast";
+import { useUIStore } from "./useUIStore";
 
 interface AskOptions {
-  suggest?: boolean;
   bypassCache?: boolean;
   documentId?: string | null;
-  intent?: "auto" | "summary" | "analysis";
+  intent?: "auto" | "summary";
+  explainLevel?: ExplainLevel | null;
 }
 
 interface AppState {
   health: HealthResponse | null;
-  categories: DocumentCategory[];
+  categories: Category[];
   documents: DocumentRead[];
   loadingMeta: boolean;
 
@@ -41,8 +41,6 @@ interface AppState {
   streaming: boolean;
   activeAnswer: AnswerResponse | null;
   streamingChunks: SourceChunk[];
-  streamingAnalysis: AnalysisBlock | null;
-  streamingSuggestions: Suggestion[];
   highlightedChunkId: string | null;
   highlightedMessageId: string | null;
 
@@ -61,20 +59,15 @@ interface AppState {
   highlightChunk: (id: string | null) => void;
   highlightMessage: (id: string | null) => void;
 
-  ask: (question: string, opts: AskOptions) => Promise<void>;
+  ask: (question: string, opts?: AskOptions) => Promise<void>;
   summariseDoc: (id: string, title: string) => Promise<void>;
-  analyseDoc: (id: string, title: string) => Promise<void>;
   stop: () => void;
-  decideSuggestion: (
-    messageId: string,
-    suggestionId: string,
-    decision: "accept" | "reject" | "done",
-    note?: string,
-  ) => Promise<void>;
-  runSuggestion: (messageId: string, suggestion: Suggestion) => Promise<void>;
 
   ingestText: (input: { title: string; content: string; category?: string | null }) => Promise<boolean>;
-  uploadDoc: (file: File, category?: string | null) => Promise<boolean>;
+  uploadDoc: (
+    file: File,
+    opts?: { category?: string | null; title?: string; hint?: string },
+  ) => Promise<{ ok: boolean; detectedKind?: string | null; noteId?: string | null }>;
   deleteDoc: (id: string) => Promise<void>;
 }
 
@@ -108,8 +101,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   streaming: false,
   activeAnswer: null,
   streamingChunks: [],
-  streamingAnalysis: null,
-  streamingSuggestions: [],
   highlightedChunkId: null,
   highlightedMessageId: null,
   _abort: null,
@@ -148,7 +139,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       set({ conversations: await api.listConversations() });
     } catch {
-      /* handled by 401 interceptor / stays as-is */
+      /* handled by 401 interceptor */
     }
   },
 
@@ -165,8 +156,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         activeAnswer,
         streamingChunks: [],
-        streamingAnalysis: null,
-        streamingSuggestions: [],
         highlightedChunkId: null,
         highlightedMessageId: targeted ? targeted.id : null,
       });
@@ -184,12 +173,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       activeAnswer: null,
       streamingChunks: [],
-      streamingAnalysis: null,
-      streamingSuggestions: [],
       highlightedChunkId: null,
       highlightedMessageId: null,
       compareDocIds: [],
     });
+    useUIStore.getState().setView("chat");
   },
 
   async renameChat(id, title) {
@@ -225,9 +213,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   highlightMessage: (id) => set({ highlightedMessageId: id }),
   highlightChunk: (id) => set({ highlightedChunkId: id }),
 
-  async ask(question, opts) {
+  async ask(question, opts = {}) {
     const trimmed = question.trim();
     if (!trimmed || get().streaming) return;
+    useUIStore.getState().setView("chat");
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -239,6 +228,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const controller = new AbortController();
     const isNewConversation = get().activeId === null;
     const compareDocs = get().compareDocIds;
+    const explainLevel = opts.explainLevel ?? useUIStore.getState().explainLevel ?? null;
 
     set((s) => ({
       messages: [
@@ -249,8 +239,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       streaming: true,
       activeAnswer: null,
       streamingChunks: [],
-      streamingAnalysis: null,
-      streamingSuggestions: [],
       highlightedChunkId: null,
       highlightedMessageId: null,
       _abort: controller,
@@ -264,23 +252,17 @@ export const useAppStore = create<AppState>((set, get) => ({
           categoryId: compareDocs.length || opts.documentId ? null : get().selectedCategoryId,
           documentId: opts.documentId ?? null,
           intent: opts.intent ?? "auto",
+          explainLevel,
           compareDocumentIds: compareDocs.length >= 2 ? compareDocs : null,
-          suggest: opts.suggest ?? true,
           bypassCache: opts.bypassCache,
           topK: 8,
         },
         (event) => {
           if (event.type === "start") {
-            // Ephemeral replies (greetings, "what can you do") stream with an
-            // empty conversationId and are never persisted — don't open a chat.
             const cid = event.payload.conversationId;
             if (cid && get().activeId !== cid) set({ activeId: cid });
           } else if (event.type === "grounding") {
             set({ streamingChunks: event.payload.sourceChunks });
-          } else if (event.type === "analysis") {
-            set({ streamingAnalysis: event.payload });
-          } else if (event.type === "suggestions") {
-            set({ streamingSuggestions: event.payload.suggestions });
           } else if (event.type === "token") {
             set((s) => ({
               messages: patch(s.messages, assistantId, {
@@ -291,8 +273,6 @@ export const useAppStore = create<AppState>((set, get) => ({
             const answer = event.payload;
             set((s) => ({
               activeAnswer: answer,
-              streamingAnalysis: null,
-              streamingSuggestions: [],
               messages: patch(s.messages, assistantId, { content: answer.answer, answer, pending: false }),
             }));
           } else if (event.type === "error") {
@@ -312,7 +292,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else {
         const message = err instanceof Error ? err.message : String(err);
         set((s) => ({ messages: patch(s.messages, assistantId, { pending: false, error: message }) }));
-        toast.error("Query failed", message);
+        toast.error("Something went wrong", message);
       }
     } finally {
       set({ streaming: false, _abort: null });
@@ -323,20 +303,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   async summariseDoc(id, title) {
     if (get().streaming) return;
     if (get().compareDocIds.length) set({ compareDocIds: [] });
-    await get().ask(`Summarise the "${title}" document — its purpose and key points.`, {
-      suggest: false,
+    await get().ask(`Give me a study summary of "${title}" — what it covers and the key points.`, {
       documentId: id,
       intent: "summary",
-    });
-  },
-
-  async analyseDoc(id, title) {
-    if (get().streaming) return;
-    if (get().compareDocIds.length) set({ compareDocIds: [] });
-    await get().ask(`Give me an overview of the "${title}" data — the key figures and anything notable.`, {
-      suggest: false,
-      documentId: id,
-      intent: "analysis",
     });
   },
 
@@ -344,49 +313,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     get()._abort?.abort();
   },
 
-  async decideSuggestion(messageId, suggestionId, decision, note) {
-    try {
-      const res = await api.decideSuggestion(suggestionId, decision, note);
-      const swap = (a: AnswerResponse): AnswerResponse => ({
-        ...a,
-        suggestions: a.suggestions.flatMap((sg) => {
-          if (sg.id !== suggestionId) return [sg];
-          return res.alternative ? [res.suggestion, res.alternative] : [res.suggestion];
-        }),
-      });
-      set((s) => ({
-        messages: s.messages.map((m) =>
-          m.id === messageId && m.answer ? { ...m, answer: swap(m.answer) } : m,
-        ),
-        activeAnswer:
-          s.activeAnswer && s.activeAnswer.suggestions.some((sg) => sg.id === suggestionId)
-            ? swap(s.activeAnswer)
-            : s.activeAnswer,
-        streamingSuggestions: s.streamingSuggestions.some((sg) => sg.id === suggestionId)
-          ? s.streamingSuggestions.flatMap((sg) =>
-              sg.id !== suggestionId
-                ? [sg]
-                : res.alternative
-                  ? [res.suggestion, res.alternative]
-                  : [res.suggestion],
-            )
-          : s.streamingSuggestions,
-      }));
-    } catch (err) {
-      toast.error("Couldn't save that", err instanceof Error ? err.message : String(err));
-    }
-  },
-
-  async runSuggestion(messageId, suggestion) {
-    if (get().streaming) return;
-    // Ask it as a normal grounded question, then log the suggestion as done.
-    await get().ask(suggestion.text, { suggest: false });
-    await get().decideSuggestion(messageId, suggestion.id, "done", "ran from suggestion");
-  },
-
   async ingestText(input) {
     try {
-      const res = await api.ingestText({ ...input, sourceType: "note" });
+      const res = await api.ingestText({ ...input, sourceType: "text" });
       toast.success(
         res.deduplicated ? "Already added" : "Added",
         `${res.documentTitle} · ${res.chunksCreated} sections`,
@@ -399,18 +328,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  async uploadDoc(file, category) {
+  async uploadDoc(file, opts) {
     try {
-      const res = await api.uploadDocument(file, category);
+      const res = await api.uploadDocument(file, opts);
+      const kindLabel = res.detectedKind ? ` · read as a ${res.detectedKind}` : "";
       toast.success(
         res.deduplicated ? "Already added" : "Added",
-        `${res.documentTitle} · ${res.chunksCreated} sections`,
+        `${res.documentTitle}${kindLabel}`,
       );
       await get().refreshMeta();
-      return true;
+      return { ok: true, detectedKind: res.detectedKind, noteId: res.noteId };
     } catch (err) {
       toast.error("Couldn't add that file", err instanceof Error ? err.message : String(err));
-      return false;
+      return { ok: false };
     }
   },
 

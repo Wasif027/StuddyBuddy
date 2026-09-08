@@ -3,46 +3,32 @@
  * (backend/app/models/schemas.py is the source of truth).
  */
 
-export type SuggestionDecision = "pending" | "accepted" | "rejected" | "done";
-export type SuggestionPriority = "high" | "medium" | "low";
-
 export type ConfidenceLabel = "high" | "medium" | "low" | "insufficient";
+export type RetrievalMode = "pinpoint" | "document" | "overview" | "meta" | "general";
+export type ExplainLevel = "simple" | "standard" | "deep" | "exam";
+export type QuestionTier = "easy" | "medium" | "hard" | "brutal";
+export type QuestionType = "mcq" | "short" | "numeric" | "true_false" | "explain";
+export type NoteKind = "note" | "log" | "routine" | "saved";
+export type DocStatus = "ready" | "processing" | "failed" | "pending";
 
-export type RetrievalMode = "pinpoint" | "document" | "overview" | "analysis" | "meta";
+export const STUDY_LEVELS = [
+  "year-8",
+  "gcse",
+  "high-school",
+  "a-level",
+  "ib",
+  "undergraduate",
+] as const;
+export type StudyLevel = (typeof STUDY_LEVELS)[number];
 
-export type ChunkKind = "text" | "page" | "slide" | "sheet";
+export const EXPLAIN_LEVELS: { id: ExplainLevel; label: string; blurb: string }[] = [
+  { id: "simple", label: "Simple", blurb: "Plain language, one idea at a time" },
+  { id: "standard", label: "Standard", blurb: "Clear, with a worked example" },
+  { id: "deep", label: "In depth", blurb: "Mechanism, edge cases, connections" },
+  { id: "exam", label: "Exam", blurb: "Mark-scheme phrasing and structure" },
+];
 
-export interface SlideMeta {
-  kind: "slide";
-  slide: number;
-  title?: string | null;
-  dataScore?: number;
-  hasChart?: boolean;
-  hasTable?: boolean;
-}
-
-export interface ChartSpec {
-  type: "bar" | "line";
-  x: string;
-  series: string[];
-}
-
-export interface AnalysisBlock {
-  ok: boolean;
-  sql: string;
-  dialect: string;
-  columns: string[];
-  rows: Array<Array<string | number | boolean | null>>;
-  rowCount: number;
-  truncated: boolean;
-  tablesUsed: string[];
-  assumptions: string;
-  error: string | null;
-  chart: ChartSpec | null;
-}
-
-export type DocStatus = "ready" | "processing" | "failed" | "empty" | "indexing";
-
+/* --------------------------------------------------------------- answers */
 export interface Citation {
   marker: number;
   chunkId: string;
@@ -69,27 +55,6 @@ export interface SourceChunk {
   metadata: Record<string, unknown>;
 }
 
-export type SuggestionKind = "explore" | "external";
-
-export interface Suggestion {
-  id: string;
-  text: string;
-  rationale: string | null;
-  priority: SuggestionPriority;
-  kind: SuggestionKind;
-  decision: SuggestionDecision;
-  note: string | null;
-  rejectDepth: number;
-  createdAt: string | null;
-  decidedAt: string | null;
-  // history context
-  question: string | null;
-  conversationId: string | null;
-  messageId: string | null;
-  conversationTitle: string | null;
-  conversationDeleted: boolean;
-}
-
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -105,13 +70,13 @@ export interface AnswerResponse {
   confidence: number;
   confidenceLabel: ConfidenceLabel;
   insufficientEvidence: boolean;
+  grounded: boolean;
   compareMode: boolean;
   retrievalMode: RetrievalMode;
   retrievalNote: string;
-  analysis: AnalysisBlock | null;
+  explainLevel: ExplainLevel;
   citations: Citation[];
   sourceChunks: SourceChunk[];
-  suggestions: Suggestion[];
   followUps: string[];
   model: string;
   provider: string;
@@ -127,17 +92,11 @@ export interface QueryRequest {
   topK?: number;
   categoryId?: string | null;
   documentId?: string | null;
-  intent?: "auto" | "summary" | "analysis";
+  intent?: "auto" | "summary";
+  explainLevel?: ExplainLevel | null;
   compareDocumentIds?: string[] | null;
-  suggest?: boolean;
   stream?: boolean;
   bypassCache?: boolean;
-}
-
-export interface SuggestionDecisionResponse {
-  suggestion: Suggestion;
-  alternative: Suggestion | null;
-  message: string;
 }
 
 /* -------------------------------------------------------------------- auth */
@@ -145,6 +104,7 @@ export interface User {
   id: string;
   username: string;
   displayName: string | null;
+  studyLevel: string;
   createdAt: string;
 }
 
@@ -154,6 +114,8 @@ export interface AuthResponse {
 }
 
 /* ------------------------------------------------------------ conversations */
+export type ChatRole = "user" | "assistant";
+
 export interface Conversation {
   id: string;
   title: string;
@@ -175,12 +137,28 @@ export interface ConversationDetail extends Conversation {
   messages: ConversationMessage[];
 }
 
-export interface DocumentCategory {
+/* ------------------------------------------------------------- categories */
+export interface Category {
   id: string;
+  slug: string;
   label: string;
+  level: string | null;
+  color: string | null;
+  isDefault: boolean;
   docCount: number;
-  chunkCount: number;
-  status: DocStatus;
+  noteCount: number;
+  createdAt: string | null;
+}
+
+/* -------------------------------------------------------------- materials */
+export interface SlidePreview {
+  index: number;
+  title: string | null;
+  bullets: string[];
+  notes: string | null;
+  hasChart: boolean;
+  hasTable: boolean;
+  importance: number;
 }
 
 export interface DocumentRead {
@@ -188,12 +166,19 @@ export interface DocumentRead {
   title: string;
   category: string | null;
   sourceType: string;
-  status: string;
+  status: DocStatus;
   error: string | null;
   chunkCount: number;
+  slideCount: number;
   charCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DocumentDetail extends DocumentRead {
+  metadata: Record<string, unknown>;
+  chunks: { chunkIndex: number; heading: string | null; text: string; tokenCount: number }[];
+  slides: SlidePreview[];
 }
 
 export interface IngestionResponse {
@@ -204,8 +189,162 @@ export interface IngestionResponse {
   charCount: number;
   elapsedMs: number;
   deduplicated: boolean;
+  noteId: string | null;
+  detectedKind: string | null;
 }
 
+/* ------------------------------------------------------- study guide */
+export type StudyGuideKind =
+  | "guide"
+  | "glossary"
+  | "cheatsheet"
+  | "concept_map"
+  | "flashcards"
+  | "key_slides";
+
+export interface Flashcard {
+  front: string;
+  back: string;
+  hint: string | null;
+}
+
+export interface ConceptNode {
+  id: string;
+  label: string;
+  parent: string | null;
+  note: string | null;
+}
+
+export interface StudyGuideResponse {
+  documentId: string;
+  kind: StudyGuideKind;
+  title: string;
+  markdown: string;
+  flashcards: Flashcard[];
+  concepts: ConceptNode[];
+  keySlides: SlidePreview[];
+  model: string;
+}
+
+/* --------------------------------------------------------------- practice */
+export interface AttemptRead {
+  id: string;
+  questionId: string | null;
+  userAnswer: string;
+  correct: boolean;
+  score: number;
+  feedback: string;
+  tier: string;
+  createdAt: string | null;
+}
+
+export interface QuestionRead {
+  id: string;
+  index: number;
+  tier: QuestionTier;
+  qtype: QuestionType;
+  prompt: string;
+  options: string[];
+  skill: string | null;
+  answer: string | null;
+  rubric: string | null;
+  attempt: AttemptRead | null;
+}
+
+export interface PracticeSetRead {
+  id: string;
+  topic: string;
+  category: string | null;
+  studyLevel: string;
+  source: string;
+  documentId: string | null;
+  conversationId: string | null;
+  model: string;
+  createdAt: string;
+  questions: QuestionRead[];
+  answered: number;
+  correct: number;
+}
+
+export interface PracticeSetSummary {
+  id: string;
+  topic: string;
+  category: string | null;
+  studyLevel: string;
+  source: string;
+  createdAt: string;
+  questionCount: number;
+  answered: number;
+  correct: number;
+}
+
+export interface GradeResponse {
+  attempt: AttemptRead;
+  answer: string;
+  rubric: string;
+  model: string;
+}
+
+/* ----------------------------------------------------------------- notes */
+export interface NoteRead {
+  id: string;
+  category: string | null;
+  kind: NoteKind;
+  title: string;
+  bodyMd: string;
+  structured: Record<string, unknown>;
+  source: string;
+  sourceRef: string | null;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoutineDay {
+  day: string;
+  entries: { time?: string; label?: string; location?: string }[];
+}
+
+/* -------------------------------------------------------------- progress */
+export interface TrendPoint {
+  date: string;
+  attempts: number;
+  accuracy: number;
+}
+
+export interface SkillStat {
+  skill: string;
+  category: string | null;
+  attempts: number;
+  accuracy: number;
+}
+
+export interface CategoryProgress {
+  category: string;
+  label: string;
+  attempts: number;
+  accuracy: number;
+  docCount: number;
+  readiness: number;
+}
+
+export interface ProgressResponse {
+  totalAttempts: number;
+  overallAccuracy: number;
+  currentStreak: number;
+  longestStreak: number;
+  studyDays: string[];
+  trend: TrendPoint[];
+  byTier: Record<string, number>;
+  weakSkills: SkillStat[];
+  strongSkills: SkillStat[];
+  byCategory: CategoryProgress[];
+  documents: number;
+  notes: number;
+  practiceSets: number;
+}
+
+/* ----------------------------------------------------------------- meta */
 export interface HealthResponse {
   status: "healthy" | "degraded" | "unhealthy";
   version: string;
@@ -214,6 +353,7 @@ export interface HealthResponse {
   llmProvider: string;
   llmModel: string;
   llmActive: boolean;
+  visionEnabled: boolean;
   embeddingProvider: string;
   embeddingDim: number;
 }
@@ -226,14 +366,10 @@ export type StreamEvent =
       payload: { sourceChunks: SourceChunk[]; retrievalMode?: RetrievalMode; retrievalNote?: string };
     }
   | { type: "token"; payload: { text: string } }
-  | { type: "analysis"; payload: AnalysisBlock }
-  | { type: "suggestions"; payload: { suggestions: Suggestion[] } }
   | { type: "final"; payload: AnswerResponse }
   | { type: "error"; payload: { message: string } };
 
 /* ---------------------------------------------------------------- chat UI */
-export type ChatRole = "user" | "assistant";
-
 export interface ChatMessage {
   id: string;
   role: ChatRole;

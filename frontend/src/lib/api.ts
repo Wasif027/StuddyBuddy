@@ -8,17 +8,23 @@ import { consumeSSE } from "./stream";
 import type {
   AnswerResponse,
   AuthResponse,
+  Category,
   Conversation,
   ConversationDetail,
-  DocumentCategory,
+  DocumentDetail,
   DocumentRead,
+  GradeResponse,
   HealthResponse,
   IngestionResponse,
+  NoteKind,
+  NoteRead,
+  PracticeSetRead,
+  PracticeSetSummary,
+  ProgressResponse,
   QueryRequest,
   StreamEvent,
-  Suggestion,
-  SuggestionDecision,
-  SuggestionDecisionResponse,
+  StudyGuideKind,
+  StudyGuideResponse,
   User,
 } from "./types";
 
@@ -47,8 +53,6 @@ async function request<T>(path: string, init?: RequestInit, _retry = true): Prom
   try {
     res = await fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init?.headers) });
   } catch (err) {
-    // A scaled-to-zero Neon DB / a just-woken free API instance can drop the
-    // first request. Retry a GET once before surfacing the error.
     if (_retry && (!init?.method || init.method === "GET")) {
       await sleep(900);
       return request<T>(path, init, false);
@@ -80,22 +84,35 @@ async function request<T>(path: string, init?: RequestInit, _retry = true): Prom
   return (await res.json()) as T;
 }
 
-const json = (body: unknown): RequestInit => ({
-  method: "POST",
+const json = (body: unknown, method = "POST"): RequestInit => ({
+  method,
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
 });
 
 export const api = {
   /* ---- auth ---- */
-  register: (b: { username: string; password: string; displayName?: string }) =>
+  register: (b: { username: string; password: string; displayName?: string; studyLevel?: string }) =>
     request<AuthResponse>("/auth/register", json(b)),
   login: (b: { username: string; password: string }) => request<AuthResponse>("/auth/login", json(b)),
   me: () => request<User>("/auth/me"),
+  updateMe: (b: { displayName?: string; studyLevel?: string }) =>
+    request<User>("/auth/me", json(b, "PATCH")),
 
   /* ---- meta ---- */
   health: () => request<HealthResponse>("/health"),
-  listCategories: () => request<DocumentCategory[]>("/categories"),
+
+  /* ---- categories ---- */
+  listCategories: () => request<Category[]>("/categories"),
+  createCategory: (b: { label: string; level?: string | null; color?: string | null }) =>
+    request<Category>("/categories", json(b)),
+  updateCategory: (id: string, b: { label?: string; level?: string | null; color?: string | null }) =>
+    request<Category>(`/categories/${id}`, json(b, "PATCH")),
+  deleteCategory: (id: string, reassignTo?: string) =>
+    request<void>(
+      `/categories/${id}${reassignTo ? `?reassign_to=${encodeURIComponent(reassignTo)}` : ""}`,
+      { method: "DELETE" },
+    ),
 
   /* ---- conversations ---- */
   listConversations: () => request<Conversation[]>("/conversations"),
@@ -103,32 +120,63 @@ export const api = {
     request<ConversationDetail>("/conversations", json({ title })),
   getConversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
   renameConversation: (id: string, title: string) =>
-    request<Conversation>(`/conversations/${id}`, { ...json({ title }), method: "PATCH" }),
+    request<Conversation>(`/conversations/${id}`, json({ title }, "PATCH")),
   deleteConversation: (id: string) => request<void>(`/conversations/${id}`, { method: "DELETE" }),
 
-  /* ---- documents ---- */
+  /* ---- materials ---- */
   listDocuments: (category?: string) =>
     request<DocumentRead[]>(`/documents${category ? `?category=${encodeURIComponent(category)}` : ""}`),
+  getDocument: (id: string) => request<DocumentDetail>(`/documents/${id}`),
   deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: "DELETE" }),
   ingestText: (b: { title: string; content: string; category?: string | null; sourceType?: string }) =>
     request<IngestionResponse>("/documents", json(b)),
-  uploadDocument: (file: File, category?: string | null) => {
+  uploadDocument: (file: File, opts: { category?: string | null; title?: string; hint?: string } = {}) => {
     const fd = new FormData();
     fd.append("file", file);
-    if (category) fd.append("category", category);
+    if (opts.category) fd.append("category", opts.category);
+    if (opts.title) fd.append("title", opts.title);
+    if (opts.hint) fd.append("hint", opts.hint);
     return request<IngestionResponse>("/documents/upload", { method: "POST", body: fd });
   },
 
-  /* ---- suggestions ---- */
-  listSuggestions: (params: { status?: SuggestionDecision; conversationId?: string } = {}) => {
-    const q = new URLSearchParams();
-    if (params.status) q.set("status", params.status);
-    if (params.conversationId) q.set("conversation_id", params.conversationId);
-    const qs = q.toString();
-    return request<Suggestion[]>(`/suggestions${qs ? `?${qs}` : ""}`);
+  /* ---- study guide ---- */
+  studyGuide: (documentId: string, kind: StudyGuideKind) =>
+    request<StudyGuideResponse>("/study-guide", json({ documentId, kind })),
+
+  /* ---- practice ---- */
+  listPracticeSets: () => request<PracticeSetSummary[]>("/practice"),
+  getPracticeSet: (id: string) => request<PracticeSetRead>(`/practice/${id}`),
+  createPracticeSet: (b: {
+    topic?: string;
+    documentId?: string;
+    conversationId?: string;
+    category?: string | null;
+    studyLevel?: string;
+  }) => request<PracticeSetRead>("/practice", json(b)),
+  gradeAnswer: (setId: string, index: number, b: { answer?: string; optionIndex?: number | null }) =>
+    request<GradeResponse>(`/practice/${setId}/questions/${index}/grade`, json(b)),
+  deletePracticeSet: (id: string) => request<void>(`/practice/${id}`, { method: "DELETE" }),
+
+  /* ---- notes ---- */
+  listNotes: (params: { kind?: NoteKind; category?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.kind) qs.set("kind", params.kind);
+    if (params.category) qs.set("category", params.category);
+    if (params.q) qs.set("q", params.q);
+    const s = qs.toString();
+    return request<NoteRead[]>(`/notes${s ? `?${s}` : ""}`);
   },
-  decideSuggestion: (id: string, decision: "accept" | "reject" | "done", note?: string) =>
-    request<SuggestionDecisionResponse>(`/suggestions/${id}/decide`, json({ decision, note })),
+  createNote: (b: { title: string; bodyMd?: string; kind?: NoteKind; category?: string | null }) =>
+    request<NoteRead>("/notes", json(b)),
+  updateNote: (id: string, b: { title?: string; bodyMd?: string; category?: string | null; pinned?: boolean }) =>
+    request<NoteRead>(`/notes/${id}`, json(b, "PATCH")),
+  deleteNote: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
+  saveFromChat: (b: { messageId: string; title?: string; category?: string | null }) =>
+    request<NoteRead>("/notes/from-chat", json(b)),
+  quizFromNote: (id: string) => request<PracticeSetRead>(`/notes/${id}/quiz`, json({})),
+
+  /* ---- progress ---- */
+  progress: () => request<ProgressResponse>("/progress"),
 
   /* ---- query ---- */
   query: (body: QueryRequest) => request<AnswerResponse>("/query", json({ ...body, stream: false })),
