@@ -111,13 +111,12 @@ def _ensure_extensions() -> None:
 
 
 def _drop_legacy() -> None:
-    """One-off cleanup of tables removed by a schema change (dev/CI only).
-
-    `actions` (the old stubbed controlled-action rows) was replaced by
-    `suggestions`. Its data was all simulated, so dropping it loses nothing real.
+    """Drop tables from the Groundwork lineage this app no longer defines
+    (spreadsheet analytics + next-step suggestions). Safe on a fresh DB.
     """
     with engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS actions CASCADE"))
+        for tbl in ("suggestions", "actions", "document_tables"):
+            conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
 
 
 def _ensure_columns() -> None:
@@ -127,7 +126,7 @@ def _ensure_columns() -> None:
     on every ``init``. Keep it small — real migrations belong in a migration tool.
     """
     stmts = (
-        "ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS kind varchar(16) NOT NULL DEFAULT 'external'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS study_level varchar(32) NOT NULL DEFAULT 'high-school'",
         "CREATE INDEX IF NOT EXISTS ix_chunks_document_id ON chunks (document_id)",
     )
     with engine.begin() as conn:

@@ -1,8 +1,8 @@
-"""RAG + decision orchestration (user- and conversation-scoped).
+"""Tutor RAG orchestration (user- and conversation-scoped).
 
 Pipeline:  resolve chat → persist prompt → embed → hybrid retrieve → rerank →
-synthesize (structured) → score confidence → suggest next steps →
-persist answer + assistant message → respond.
+explain (grounded, at the right depth) → score confidence → persist answer +
+assistant message → respond.  JSON and SSE variants.
 """
 
 from __future__ import annotations
@@ -21,32 +21,12 @@ from app.core import cache
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.telemetry import tracer
-from app.models.orm import (
-    Answer,
-    Conversation,
-    Document,
-    Message,
-    MessageRole,
-    Suggestion,
-    SuggestionDecision,
-    User,
-)
-from app.models.schemas import (
-    AnalysisBlock,
-    AnswerResponse,
-    ChartSpec,
-    Citation,
-    QueryRequest,
-    SourceChunk,
-    SuggestionRead,
-    TokenUsage,
-)
+from app.models.orm import Answer, Category, Conversation, Document, Message, MessageRole, User
+from app.models.schemas import AnswerResponse, Citation, QueryRequest, SourceChunk, TokenUsage
 from app.services import llm, meta
-from app.services.analysis import AnalysisResult, run_analysis
 from app.services.embeddings import embed_text
-from app.services.query_planner import _ANALYSIS_RE, RetrievalPlan, plan_retrieval
+from app.services.query_planner import RetrievalPlan, plan_retrieval
 from app.services.reranker import rerank
-from app.services.suggestions import to_read as _suggestion_read
 from app.services.vectorstore import (
     RetrievedChunk,
     Scope,
@@ -59,6 +39,8 @@ logger = get_logger(__name__)
 settings = get_settings()
 _tracer = tracer(__name__)
 
+_LEVELS = ("simple", "standard", "deep", "exam")
+
 
 # --------------------------------------------------------------------- scoring
 def _confidence(
@@ -68,25 +50,16 @@ def _confidence(
     mode: str = "pinpoint",
 ) -> float:
     if not retrieved:
-        return 0.08
-    n_citations = len(citations)
+        return round(max(0.0, min(1.0, synth_conf)), 3)
+    n = len(citations)
     if mode in ("document", "overview"):
-        # The evidence is the document (or a wide sample); cosine similarity to a
-        # vague "summarise…" query is meaningless here. Lean on the model's own
-        # calibrated confidence and whether it actually cited what it was given.
-        coverage = min(1.0, n_citations / 3)
-        blended = 0.70 * synth_conf + 0.30 * coverage
-        return round(max(0.0, min(1.0, blended)), 3)
-    # Score the passages the answer actually leaned on, not the top-ranked ones —
-    # a clean answer built off rank-2 shouldn't be punished for a noisy rank-1.
-    if citations:
-        retrieval_conf = sum(c.score for c in citations) / len(citations)
-    else:
-        retrieval_conf = retrieved[0].score
-    coverage = min(1.0, n_citations / 1.5)  # 1 solid citation ≈ 0.67, 2 ≈ 1.0
+        coverage = min(1.0, n / 3)
+        return round(max(0.0, min(1.0, 0.70 * synth_conf + 0.30 * coverage)), 3)
+    retrieval_conf = (sum(c.score for c in citations) / n) if citations else retrieved[0].score
+    coverage = min(1.0, n / 1.5)
     blended = 0.40 * synth_conf + 0.45 * retrieval_conf + 0.15 * coverage
     if retrieved[0].score < settings.min_evidence_score:
-        blended = min(blended, 0.15)
+        blended = min(blended, 0.25)
     return round(max(0.0, min(1.0, blended)), 3)
 
 
@@ -100,8 +73,37 @@ def _label(conf: float) -> str:
     return "insufficient"
 
 
+# ------------------------------------------------------------------- level
+def _resolve_level(db: Session, user: User, request: QueryRequest) -> str:
+    if request.explain_level in _LEVELS:
+        return request.explain_level  # type: ignore[return-value]
+    if request.category_id:
+        cat = db.execute(
+            select(Category).where(
+                Category.user_id == user.id, Category.slug == request.category_id
+            )
+        ).scalar_one_or_none()
+        if cat and cat.level in _LEVELS:
+            return cat.level
+    return settings.default_explain_level
+
+
+def _student_level(db: Session, user: User, request: QueryRequest) -> str:
+    if request.category_id:
+        cat = db.execute(
+            select(Category).where(
+                Category.user_id == user.id, Category.slug == request.category_id
+            )
+        ).scalar_one_or_none()
+        if cat and cat.level:
+            return cat.level
+    return user.study_level or settings.default_study_level
+
+
 # ---------------------------------------------------------------- conversation
-def resolve_conversation(db: Session, user: User, conversation_id: str | None, first_prompt: str) -> Conversation:
+def resolve_conversation(
+    db: Session, user: User, conversation_id: str | None, first_prompt: str
+) -> Conversation:
     if conversation_id:
         conv = db.get(Conversation, conversation_id)
         if conv is None or conv.user_id != user.id:
@@ -115,11 +117,9 @@ def resolve_conversation(db: Session, user: User, conversation_id: str | None, f
 
 
 # --------------------------------------------------------------- conversational
-# A follow-up ("and who books it?", "what about the old policy?") carries its
-# subject only in the chat history. Fold the recent user turns into the string
-# used for *retrieval* (not the displayed question) when the turn looks anaphoric.
 _FOLLOWUP_RE = re.compile(
-    r"^(and|also|but|so|then|ok(ay)?|what about|how about|what of)\b"
+    r"^(and|also|but|so|then|ok(ay)?|what about|how about|what of|go deeper|"
+    r"more detail|simpler|again)\b"
     r"|\b(it|its|it's|that|those|these|this|they|them|there|the same|do so|"
     r"the (former|latter|first|second|one|other))\b",
     re.IGNORECASE,
@@ -149,7 +149,7 @@ def _history_block(history: list[tuple[str, str]], turns: int = 4) -> str | None
     recent = [(r, c) for r, c in history if c][-turns:]
     if not recent:
         return None
-    lines = [f"{'User' if r == 'user' else 'Assistant'}: {c[:400]}" for r, c in recent]
+    lines = [f"{'Student' if r == 'user' else 'Tutor'}: {c[:400]}" for r, c in recent]
     return "Earlier in this conversation:\n" + "\n".join(lines)
 
 
@@ -159,16 +159,11 @@ def _plan(db: Session, user: User, request: QueryRequest, rq: str) -> RetrievalP
         return RetrievalPlan(
             mode="pinpoint",
             k=max(request.top_k, settings.top_k_default),
-            reason="compare mode — retrieval restricted to the selected documents",
+            reason="comparing the materials you selected",
         )
     return plan_retrieval(
-        db,
-        user,
-        rq,
-        request.top_k,
-        document_id=request.document_id,
-        intent=request.intent,
-        category_id=request.category_id,
+        db, user, rq, request.top_k,
+        document_id=request.document_id, intent=request.intent, category_id=request.category_id,
     )
 
 
@@ -178,21 +173,15 @@ def _retrieve(
 ) -> list[RetrievedChunk]:
     with _tracer.start_as_current_span("rag.retrieve") as span:
         span.set_attribute("plan.mode", plan.mode)
-        span.set_attribute("plan.reason", plan.reason)
         compare_ids = request.compare_document_ids or None
-
-        # A named document tightens the scope even for a pinpoint question.
         doc_scope = compare_ids or ([plan.document_id] if plan.document_id else None)
         scope = Scope(user_id=user.id, category=request.category_id, document_ids=doc_scope)
 
         if plan.mode == "document" and plan.document_id:
             results = fetch_document_chunks(db, plan.document_id, scope, plan.k)
         else:
-            embedding = embed_text(rq)
             results = hybrid_search(
-                db,
-                query=rq,
-                embedding=embedding,
+                db, query=rq, embedding=embed_text(rq),
                 k=plan.k + 6,
                 candidates=max(settings.retrieval_candidates, plan.k * 4),
                 scope=scope,
@@ -245,8 +234,6 @@ def _kw(text: str) -> set[str]:
 def _splice_markers(
     text: str, uses: list[llm.CitationUse], passages: list[llm.ContextPassage], valid: set[int]
 ) -> tuple[str, list[int]]:
-    """The model returned citations but wrote no [n] tokens — attach each marker
-    to the sentence that best matches its quote (or its passage text)."""
     sentences = _SENT_SPLIT.split(text)
     p_by_marker = {p.marker: p for p in passages}
     order: list[int] = []
@@ -272,15 +259,10 @@ def _normalise_citations(
     passages: list[llm.ContextPassage],
     retrieved: list[RetrievedChunk],
 ) -> tuple[str, list[Citation]]:
-    """Renumber citation markers to 1..k in order of first appearance in the
-    answer, splicing them in when the model forgot to, and dropping stray markers
-    that point at nothing. Returns the rewritten answer and the final citations.
-    """
     p_by_marker = {p.marker: p for p in passages}
     rc_by_id = {r.chunk.id: r for r in retrieved}
     valid = {u.marker for u in uses if u.marker in p_by_marker}
     if not valid:
-        # strip any hallucinated markers so the reader never sees a dead [3]
         return _MARKER_RE.sub("", answer_text).strip(), []
 
     ordered: list[int] = []
@@ -291,7 +273,7 @@ def _normalise_citations(
     text = answer_text
     if not ordered:
         text, ordered = _splice_markers(text, uses, passages, valid)
-    for use in uses:  # any still-missing cited marker → append at the end
+    for use in uses:
         if use.marker in valid and use.marker not in ordered:
             ordered.append(use.marker)
             text = f"{text.rstrip()} [{use.marker}]"
@@ -314,17 +296,12 @@ def _normalise_citations(
                 document_id=rc.chunk.document_id if rc else "",
                 title=p.title,
                 category=rc.chunk.document.category if rc and rc.chunk.document else None,
-                page=None,
+                page=(rc.chunk.metadata_json or {}).get("page") if rc else None,
                 quote=quote[:600],
                 score=round(rc.score if rc else p.score, 4),
             )
         )
     return text, cites
-
-
-def _has_strong_citation(citations: list[Citation]) -> bool:
-    floor = settings.min_evidence_score * 3
-    return any(c.score >= floor for c in citations)
 
 
 def _passages(retrieved: list[RetrievedChunk]) -> list[llm.ContextPassage]:
@@ -341,45 +318,6 @@ def _passages(retrieved: list[RetrievedChunk]) -> list[llm.ContextPassage]:
     ]
 
 
-# ---------------------------------------------------------------- suggestions
-def _persist_suggestions(
-    db: Session,
-    user: User,
-    answer_id: str,
-    conv: Conversation,
-    message_id: str,
-    question: str,
-    answer_text: str,
-    passages: list[llm.ContextPassage],
-    enable: bool,
-) -> list[SuggestionRead]:
-    if not enable or not settings.suggestions_enabled:
-        return []
-    with _tracer.start_as_current_span("rag.suggest") as span:
-        steps = llm.suggest_actions(question, answer_text, passages)
-        span.set_attribute("steps", len(steps))
-        rows: list[Suggestion] = []
-        for s in steps:
-            row = Suggestion(
-                id=str(uuid.uuid4()),
-                user_id=user.id,
-                answer_id=answer_id,
-                conversation_id=conv.id,
-                message_id=message_id,
-                question=question,
-                text=s.text,
-                rationale=s.rationale or None,
-                priority=s.priority,
-                kind=s.kind,
-                decision=SuggestionDecision.PENDING,
-            )
-            db.add(row)
-            rows.append(row)
-        if rows:
-            db.flush()
-        return [_suggestion_read(r) for r in rows]
-
-
 # ------------------------------------------------------------------- assemble
 def _assemble(
     db: Session,
@@ -391,6 +329,7 @@ def _assemble(
     passages: list[llm.ContextPassage],
     latency_ms: float,
     plan: RetrievalPlan,
+    level: str,
 ) -> AnswerResponse:
     answer_id = str(uuid.uuid4())
     message_id = str(uuid.uuid4())
@@ -399,223 +338,53 @@ def _assemble(
 
     answer_text = synth.answer.strip()
     answer_text, citations = _normalise_citations(answer_text, synth.citations, passages, retrieved)
+    grounded = bool(citations) and synth.grounded
     confidence = _confidence(synth.confidence, retrieved, citations, plan.mode)
     label = _label(confidence)
-    if plan.mode in ("document", "overview"):
-        insufficient = not retrieved
-    else:
-        # A borderline model confidence alone no longer flips the verdict — if the
-        # answer cites a passage that genuinely matched, treat it as sufficient.
-        insufficient = (not retrieved) or (
-            label == "insufficient" and not _has_strong_citation(citations)
-        )
 
+    # "insufficient" = the tutor neither grounded the answer nor gave a confident
+    # general-knowledge one.
+    insufficient = not grounded and label == "insufficient"
     if insufficient:
         low = answer_text.lower()
-        model_gave_up = (not answer_text) or low.startswith(
-            ("i could not", "i couldn't", "i don't", "i do not", "the provided passages",
-             "the passages do not", "there is no", "no information", "i cannot", "i can't")
+        gave_up = (not answer_text) or low.startswith(
+            ("i could not", "i couldn't", "i don't", "i do not", "i cannot", "i can't",
+             "there is no", "no information")
         )
-        if model_gave_up:
+        if gave_up:
             answer_text = _insufficient_message(db, user, request.question)
             citations = []
-        else:
-            answer_text = (
-                "Note: your documents have limited evidence for this — treat the following as "
-                "low-confidence.\n\n" + answer_text
-            )
 
     db.add(
         Answer(
-            id=answer_id,
-            user_id=user.id,
-            conversation_id=conv.id,
-            question=request.question,
-            answer=answer_text,
-            confidence=confidence,
-            model=synth.model,
-            category_id=request.category_id,
-            compare_mode=compare,
+            id=answer_id, user_id=user.id, conversation_id=conv.id,
+            question=request.question, answer=answer_text, confidence=confidence,
+            model=synth.model, category_id=request.category_id, compare_mode=compare,
             latency_ms=latency_ms,
             citations_json=[c.model_dump(by_alias=True) for c in citations],
             source_chunks_json=[s.model_dump(by_alias=True) for s in source_chunks],
-            follow_ups_json=synth.follow_ups,
-            usage_json=synth.usage or {},
+            follow_ups_json=synth.follow_ups, usage_json=synth.usage or {},
         )
     )
     db.flush()
 
-    # No point asking the model for "next steps" on an answer we couldn't ground.
-    suggestions = _persist_suggestions(
-        db, user, answer_id, conv, message_id, request.question, answer_text, passages,
-        request.suggest and not insufficient,
-    )
-
     response = AnswerResponse(
-        id=answer_id,
-        conversation_id=conv.id,
-        message_id=message_id,
-        question=request.question,
-        answer=answer_text,
-        confidence=confidence,
-        confidence_label=label,  # type: ignore[arg-type]
-        insufficient_evidence=insufficient,
-        compare_mode=compare,
-        retrieval_mode=plan.mode,
-        retrieval_note=plan.reason,
-        citations=citations,
-        source_chunks=source_chunks,
-        suggestions=suggestions,
-        follow_ups=synth.follow_ups,
-        model=synth.model,
-        provider=synth.provider,
-        latency_ms=round(latency_ms, 2),
+        id=answer_id, conversation_id=conv.id, message_id=message_id,
+        question=request.question, answer=answer_text,
+        confidence=confidence, confidence_label=label,  # type: ignore[arg-type]
+        insufficient_evidence=insufficient, grounded=grounded, compare_mode=compare,
+        retrieval_mode=plan.mode, retrieval_note=plan.reason,
+        explain_level=level,  # type: ignore[arg-type]
+        citations=citations, source_chunks=source_chunks, follow_ups=synth.follow_ups,
+        model=synth.model, provider=synth.provider, latency_ms=round(latency_ms, 2),
         usage=TokenUsage(**{k: synth.usage.get(k, 0) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}),
-        cached=False,
-        created_at=datetime.now(UTC),
+        cached=False, created_at=datetime.now(UTC),
     )
 
     db.add(
         Message(
-            id=message_id,
-            conversation_id=conv.id,
-            role=MessageRole.ASSISTANT,
-            content=answer_text,
-            answer_json=response.model_dump(by_alias=True, mode="json"),
-            created_at=datetime.now(UTC),
-        )
-    )
-    conv.updated_at = datetime.now(UTC)
-    db.commit()
-    return response
-
-
-def _analysis_should_fall_back(result: AnalysisResult, request: QueryRequest) -> bool:
-    """The planner guessed 'analysis' but the model can't answer from the sheet —
-    unless the user explicitly asked for analysis, retry as normal retrieval."""
-    if request.intent == "analysis":
-        return False
-    return not result.ok and result.error in ("no query", "no spreadsheet data in scope")
-
-
-def _ctx_passages(chunks: list[RetrievedChunk]) -> list[llm.ContextPassage]:
-    return [
-        llm.ContextPassage(
-            marker=i + 1,
-            chunk_id=h.chunk.id,
-            title=h.chunk.document.title if h.chunk.document else "",
-            heading=h.chunk.heading,
-            text=h.chunk.text,
-            score=h.score,
-        )
-        for i, h in enumerate(chunks)
-    ]
-
-
-def _assemble_analysis(
-    db: Session,
-    user: User,
-    conv: Conversation,
-    request: QueryRequest,
-    plan: RetrievalPlan,
-    result: AnalysisResult,
-    latency_ms: float,
-) -> AnswerResponse:
-    answer_id = str(uuid.uuid4())
-    message_id = str(uuid.uuid4())
-    context = result.context_chunks
-    source_chunks = _source_chunks(context)
-    ctx_passages = _ctx_passages(context)
-    synth = result.narrative or llm.Synthesis(answer="", citations=[], confidence=0.3)
-
-    if result.ok:
-        confidence = round(min(1.0, 0.5 + 0.45 * synth.confidence), 3)
-        raw_answer = synth.answer.strip() or "See the computed result."
-        answer_text, citations = _normalise_citations(
-            raw_answer, synth.citations, ctx_passages, context
-        )
-        block = AnalysisBlock(
-            ok=True,
-            sql=result.sql,
-            columns=result.columns,
-            rows=result.rows,
-            row_count=result.row_count,
-            truncated=result.truncated,
-            tables_used=result.tables_used,
-            assumptions=result.assumptions,
-            chart=ChartSpec(**result.chart) if result.chart else None,
-        )
-        insufficient = False
-    else:
-        confidence = 0.2
-        citations = []
-        answer_text = "I couldn't compute this from the spreadsheet data — " + (
-            result.error or "the query could not be built"
-        )
-        if result.assumptions:
-            answer_text += f"\n\n{result.assumptions}"
-        block = AnalysisBlock(ok=False, error=result.error, assumptions=result.assumptions)
-        insufficient = True
-
-    label = _label(confidence)
-    model_name = synth.model or settings.active_model_name
-    db.add(
-        Answer(
-            id=answer_id,
-            user_id=user.id,
-            conversation_id=conv.id,
-            question=request.question,
-            answer=answer_text,
-            confidence=confidence,
-            model=model_name,
-            category_id=request.category_id,
-            compare_mode=False,
-            latency_ms=latency_ms,
-            citations_json=[c.model_dump(by_alias=True) for c in citations],
-            source_chunks_json=[s.model_dump(by_alias=True) for s in source_chunks],
-            follow_ups_json=synth.follow_ups,
-            usage_json={"analysis": True},
-        )
-    )
-    db.flush()
-
-    suggestions = _persist_suggestions(
-        db, user, answer_id, conv, message_id, request.question, answer_text, ctx_passages,
-        request.suggest and result.ok,
-    )
-
-    response = AnswerResponse(
-        id=answer_id,
-        conversation_id=conv.id,
-        message_id=message_id,
-        question=request.question,
-        answer=answer_text,
-        confidence=confidence,
-        confidence_label=label,  # type: ignore[arg-type]
-        insufficient_evidence=insufficient,
-        compare_mode=False,
-        retrieval_mode="analysis",
-        retrieval_note=plan.reason,
-        analysis=block,
-        citations=citations,
-        source_chunks=source_chunks,
-        suggestions=suggestions,
-        follow_ups=synth.follow_ups,
-        model=model_name,
-        provider=synth.provider or settings.llm_provider,
-        latency_ms=round(latency_ms, 2),
-        usage=TokenUsage(),
-        cached=False,
-        created_at=datetime.now(UTC),
-    )
-
-    db.add(
-        Message(
-            id=message_id,
-            conversation_id=conv.id,
-            role=MessageRole.ASSISTANT,
-            content=answer_text,
-            answer_json=response.model_dump(by_alias=True, mode="json"),
+            id=message_id, conversation_id=conv.id, role=MessageRole.ASSISTANT,
+            content=answer_text, answer_json=response.model_dump(by_alias=True, mode="json"),
             created_at=datetime.now(UTC),
         )
     )
@@ -627,86 +396,60 @@ def _assemble_analysis(
 # --------------------------------------------------------------------- meta
 def _user_doc_count(db: Session, user: User) -> int:
     return int(
-        db.execute(
-            select(func.count(Document.id)).where(Document.user_id == user.id)
-        ).scalar_one()
+        db.execute(select(func.count(Document.id)).where(Document.user_id == user.id)).scalar_one()
     )
 
 
 def _user_categories(db: Session, user: User) -> list[str]:
     rows = db.execute(
+        select(Category.label).where(Category.user_id == user.id).order_by(Category.label)
+    ).scalars().all()
+    if rows:
+        return list(rows)
+    rows = db.execute(
         select(Document.category).where(Document.user_id == user.id).distinct()
     ).scalars().all()
-    return sorted({(c or "uncategorized") for c in rows})
-
-
-def _user_has_sheet(db: Session, user: User) -> bool:
-    return db.execute(
-        select(Document.id).where(
-            Document.user_id == user.id, Document.source_type.in_(("xlsx", "xls"))
-        ).limit(1)
-    ).first() is not None
+    return sorted({(c or "General") for c in rows})
 
 
 def _insufficient_message(db: Session, user: User, question: str) -> str:
     if _user_doc_count(db, user) == 0:
         return (
-            "You haven't added any documents yet, so there's nothing for me to search. "
-            "Click **Add document** to upload a PDF, Word doc, spreadsheet or slide deck — "
-            "then ask about it."
-        )
-    if bool(_ANALYSIS_RE.search(question)) and not _user_has_sheet(db, user):
-        return (
-            "This looks like a data question, but you haven't uploaded a spreadsheet with "
-            "that data. Add the `.xlsx` and ask again."
+            "I can explain this from general knowledge, but you haven't uploaded any "
+            "materials yet — add your notes, slides or a textbook chapter and I'll ground "
+            "the explanation in them and cite the pages. Ask again and I'll do my best "
+            "either way."
         )
     cats = _user_categories(db, user)
-    label = {
-        "policy": "Policies", "contract": "Contracts", "runbook": "Runbooks",
-        "tech-doc": "Technical Docs", "meeting-notes": "Meeting Notes", "incident": "Incidents",
-        "hr": "HR", "finance": "Finance", "legal": "Legal", "security": "Security",
-        "sales": "Sales", "data": "Data & Reports", "deck": "Decks",
-        "uncategorized": "Uncategorised",
-    }
-    cat_str = ", ".join(label.get(c, c.replace("-", " ").title()) for c in cats)
+    cat_str = ", ".join(cats)
     return (
-        f"I couldn't find anything about that in your documents. You have: {cat_str}. "
-        "Try rephrasing, or add a document that covers it."
+        f"I couldn't find this in your uploaded materials. You have: {cat_str}. "
+        "Try rephrasing, name the note or deck it's in, or upload something that covers it "
+        "— or ask me to explain it from general knowledge."
     )
 
 
-def _meta_answer_response(request: QueryRequest, conv_id: str | None, msg_id: str | None, text: str) -> AnswerResponse:
+def _meta_answer_response(
+    request: QueryRequest, conv_id: str | None, msg_id: str | None, text: str
+) -> AnswerResponse:
     return AnswerResponse(
-        id=str(uuid.uuid4()),
-        conversation_id=conv_id,
-        message_id=msg_id,
-        question=request.question,
-        answer=text,
-        confidence=1.0,
+        id=str(uuid.uuid4()), conversation_id=conv_id, message_id=msg_id,
+        question=request.question, answer=text, confidence=1.0,
         confidence_label="high",  # type: ignore[arg-type]
-        insufficient_evidence=False,
-        compare_mode=False,
-        retrieval_mode="meta",
-        retrieval_note="answered from your library",
-        model="assistant",
-        provider="assistant",
-        latency_ms=0.0,
-        cached=False,
+        insufficient_evidence=False, grounded=False, compare_mode=False,
+        retrieval_mode="meta", retrieval_note="",
+        model="tutor", provider="tutor", latency_ms=0.0, cached=False,
         created_at=datetime.now(UTC),
     )
 
 
 def _persist_meta(db: Session, conv: Conversation, request: QueryRequest, text: str) -> AnswerResponse:
-    """Meta answer inside an existing chat — save the turn, no Answer/Suggestion rows."""
     message_id = str(uuid.uuid4())
     response = _meta_answer_response(request, conv.id, message_id, text)
     db.add(
         Message(
-            id=message_id,
-            conversation_id=conv.id,
-            role=MessageRole.ASSISTANT,
-            content=text,
-            answer_json=response.model_dump(by_alias=True, mode="json"),
+            id=message_id, conversation_id=conv.id, role=MessageRole.ASSISTANT,
+            content=text, answer_json=response.model_dump(by_alias=True, mode="json"),
             created_at=datetime.now(UTC),
         )
     )
@@ -715,19 +458,12 @@ def _persist_meta(db: Session, conv: Conversation, request: QueryRequest, text: 
     return response
 
 
-def _cache_key(user: User, request: QueryRequest) -> str:
+def _cache_key(user: User, request: QueryRequest, level: str) -> str:
     return cache.cache_key(
-        "answer",
-        user.id,
-        request.question.strip().lower(),
-        request.top_k,
-        request.category_id or "",
-        request.document_id or "",
-        request.intent,
-        request.conversation_id or "",
-        sorted(request.compare_document_ids or []),
-        request.suggest,
-        settings.active_model_name,
+        "answer", user.id, request.question.strip().lower(), request.top_k,
+        request.category_id or "", request.document_id or "", request.intent,
+        request.conversation_id or "", sorted(request.compare_document_ids or []),
+        level, settings.active_model_name,
     )
 
 
@@ -738,55 +474,33 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
         span.set_attribute("question.length", len(request.question))
 
         meta_kind = meta.detect(request.question)
-        # A real question with an empty library gets a "add a document" reply
-        # instead of running the whole pipeline for nothing.
-        meta_text = (
-            meta.answer(db, user, meta_kind) if meta_kind
-            else (_insufficient_message(db, user, request.question)
-                  if _user_doc_count(db, user) == 0 else None)
-        )
+        meta_text = meta.answer(db, user, meta_kind) if meta_kind else None
         if meta_text is not None:
-            span.set_attribute("meta", meta_kind or "no_docs")
-            ephemeral = request.conversation_id is None and (
-                meta_kind is None or meta.is_ephemeral(meta_kind)
-            )
+            ephemeral = request.conversation_id is None and meta.is_ephemeral(meta_kind)
             if ephemeral:
                 return _meta_answer_response(request, None, None, meta_text)
             conv = resolve_conversation(db, user, request.conversation_id, request.question)
-            db.add(
-                Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
-                        content=request.question, created_at=datetime.now(UTC))
-            )
+            db.add(Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
+                           content=request.question, created_at=datetime.now(UTC)))
             return _persist_meta(db, conv, request, meta_text)
 
         conv = resolve_conversation(db, user, request.conversation_id, request.question)
         history = _recent_turns(db, conv)
-        db.add(
-            Message(
-                id=str(uuid.uuid4()),
-                conversation_id=conv.id,
-                role=MessageRole.USER,
-                content=request.question,
-                created_at=datetime.now(UTC),
-            )
-        )
+        db.add(Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
+                       content=request.question, created_at=datetime.now(UTC)))
 
-        key = _cache_key(user, request)
+        level = _resolve_level(db, user, request)
+        student = _student_level(db, user, request)
+        key = _cache_key(user, request, level)
         if not request.bypass_cache:
             hit = cache.get_json(key)
             if hit:
-                span.set_attribute("cache.hit", True)
                 hit["cached"] = True
                 hit["conversationId"] = conv.id
                 cached = AnswerResponse.model_validate(hit)
-                msg = Message(
-                    id=str(uuid.uuid4()),
-                    conversation_id=conv.id,
-                    role=MessageRole.ASSISTANT,
-                    content=cached.answer,
-                    answer_json=hit,
-                    created_at=datetime.now(UTC),
-                )
+                msg = Message(id=str(uuid.uuid4()), conversation_id=conv.id,
+                              role=MessageRole.ASSISTANT, content=cached.answer,
+                              answer_json=hit, created_at=datetime.now(UTC))
                 db.add(msg)
                 conv.updated_at = datetime.now(UTC)
                 db.commit()
@@ -795,69 +509,36 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
 
         rq = _contextual_query(request.question, history)
         plan = _plan(db, user, request, rq)
-        span.set_attribute("plan.mode", plan.mode)
-
-        if plan.mode == "analysis":
-            result = run_analysis(
-                db,
-                user,
-                question=request.question,
-                primary_document_id=plan.document_id,
-                scope_document_ids=request.compare_document_ids,
-                history=_history_block(history),
-            )
-            if _analysis_should_fall_back(result, request):
-                plan = RetrievalPlan(mode="pinpoint", k=max(request.top_k, settings.top_k_default),
-                                     reason="passage retrieval (the question isn't answerable from the sheet)")
-            else:
-                latency_ms = (time.perf_counter() - started) * 1000
-                response = _assemble_analysis(db, user, conv, request, plan, result, latency_ms)
-                if result.ok and not response.suggestions:
-                    cache.set_json(key, response.model_dump(by_alias=True))
-                span.set_attribute("confidence", response.confidence)
-                return response
-
         retrieved = _retrieve(db, user, request, plan, rq)
         passages = _passages(retrieved)
         synth = llm.synthesize(
-            request.question,
-            passages,
-            compare=bool(request.compare_document_ids),
-            mode=plan.mode,
-            history=_history_block(history),
+            request.question, passages,
+            compare=bool(request.compare_document_ids), mode=plan.mode,
+            level=level, student_level=student, history=_history_block(history),
         )
         latency_ms = (time.perf_counter() - started) * 1000
-        response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan)
-
-        if not response.insufficient_evidence and not response.suggestions:
+        response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan, level)
+        if not response.insufficient_evidence:
             cache.set_json(key, response.model_dump(by_alias=True))
         span.set_attribute("confidence", response.confidence)
         return response
 
 
 async def stream_answer(db: Session, user: User, request: QueryRequest) -> AsyncIterator[dict]:
-    """Yield SSE frames: start → grounding → [analysis] → token* → [suggestions] → final."""
+    """Yield SSE frames: start → grounding → token* → final."""
     started = time.perf_counter()
 
     meta_kind = meta.detect(request.question)
-    meta_text = (
-        meta.answer(db, user, meta_kind) if meta_kind
-        else (_insufficient_message(db, user, request.question)
-              if _user_doc_count(db, user) == 0 else None)
-    )
+    meta_text = meta.answer(db, user, meta_kind) if meta_kind else None
     if meta_text is not None:
-        ephemeral = request.conversation_id is None and (
-            meta_kind is None or meta.is_ephemeral(meta_kind)
-        )
+        ephemeral = request.conversation_id is None and meta.is_ephemeral(meta_kind)
         if ephemeral:
             response = _meta_answer_response(request, None, None, meta_text)
             yield {"type": "start", "payload": {"question": request.question, "conversationId": ""}}
         else:
             conv = resolve_conversation(db, user, request.conversation_id, request.question)
-            db.add(
-                Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
-                        content=request.question, created_at=datetime.now(UTC))
-            )
+            db.add(Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
+                           content=request.question, created_at=datetime.now(UTC)))
             db.flush()
             yield {"type": "start", "payload": {"question": request.question, "conversationId": conv.id}}
             response = _persist_meta(db, conv, request, meta_text)
@@ -868,56 +549,15 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
 
     conv = resolve_conversation(db, user, request.conversation_id, request.question)
     history = _recent_turns(db, conv)
-    db.add(
-        Message(
-            id=str(uuid.uuid4()),
-            conversation_id=conv.id,
-            role=MessageRole.USER,
-            content=request.question,
-            created_at=datetime.now(UTC),
-        )
-    )
+    db.add(Message(id=str(uuid.uuid4()), conversation_id=conv.id, role=MessageRole.USER,
+                   content=request.question, created_at=datetime.now(UTC)))
     db.flush()
     yield {"type": "start", "payload": {"question": request.question, "conversationId": conv.id}}
 
+    level = _resolve_level(db, user, request)
+    student = _student_level(db, user, request)
     rq = _contextual_query(request.question, history)
     plan = _plan(db, user, request, rq)
-
-    if plan.mode == "analysis":
-        result = run_analysis(
-            db,
-            user,
-            question=request.question,
-            primary_document_id=plan.document_id,
-            scope_document_ids=request.compare_document_ids,
-            history=_history_block(history),
-        )
-        if _analysis_should_fall_back(result, request):
-            plan = RetrievalPlan(mode="pinpoint", k=max(request.top_k, settings.top_k_default),
-                                 reason="passage retrieval (the question isn't answerable from the sheet)")
-        else:
-            latency_ms = (time.perf_counter() - started) * 1000
-            response = _assemble_analysis(db, user, conv, request, plan, result, latency_ms)
-            yield {
-                "type": "grounding",
-                "payload": {
-                    "sourceChunks": [s.model_dump(by_alias=True) for s in response.source_chunks],
-                    "retrievalMode": "analysis",
-                    "retrievalNote": plan.reason,
-                },
-            }
-            if response.analysis is not None:
-                yield {"type": "analysis", "payload": response.analysis.model_dump(by_alias=True)}
-            for i, w in enumerate(response.answer.split(" ")):
-                yield {"type": "token", "payload": {"text": (" " if i else "") + w}}
-            if response.suggestions:
-                yield {
-                    "type": "suggestions",
-                    "payload": {"suggestions": [s.model_dump(by_alias=True) for s in response.suggestions]},
-                }
-            yield {"type": "final", "payload": response.model_dump(by_alias=True, mode="json")}
-            return
-
     retrieved = _retrieve(db, user, request, plan, rq)
     passages = _passages(retrieved)
     source_chunks = _source_chunks(retrieved)
@@ -931,11 +571,9 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
     }
 
     synth = llm.synthesize(
-        request.question,
-        passages,
-        compare=bool(request.compare_document_ids),
-        mode=plan.mode,
-        history=_history_block(history),
+        request.question, passages,
+        compare=bool(request.compare_document_ids), mode=plan.mode,
+        level=level, student_level=student, history=_history_block(history),
     )
 
     buf = ""
@@ -947,16 +585,9 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
             buf = ""
 
     latency_ms = (time.perf_counter() - started) * 1000
-    response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan)
-
-    if response.suggestions:
-        yield {
-            "type": "suggestions",
-            "payload": {"suggestions": [s.model_dump(by_alias=True) for s in response.suggestions]},
-        }
-    if not response.insufficient_evidence and not response.suggestions and not request.bypass_cache:
-        cache.set_json(_cache_key(user, request), response.model_dump(by_alias=True))
-
+    response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan, level)
+    if not response.insufficient_evidence and not request.bypass_cache:
+        cache.set_json(_cache_key(user, request, level), response.model_dump(by_alias=True))
     yield {"type": "final", "payload": response.model_dump(by_alias=True, mode="json")}
 
 

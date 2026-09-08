@@ -1,4 +1,4 @@
-"""Authentication — register, login, current user."""
+"""Authentication — register, login, current user, profile."""
 
 from __future__ import annotations
 
@@ -12,9 +12,15 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.orm import User
-from app.models.schemas import AuthResponse, LoginRequest, RegisterRequest, UserRead
+from app.models.schemas import AuthResponse, LoginRequest, RegisterRequest, UserRead, UserUpdate
+from app.services.catalog import seed_default_categories
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_LEVELS = {
+    "year-8", "middle-school", "gcse", "high-school", "a-level", "ib",
+    "undergraduate", "bachelors",
+}
 
 
 def _auth_response(user: User) -> AuthResponse:
@@ -29,13 +35,17 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)) -> AuthRespon
     ).scalar_one_or_none()
     if exists:
         raise HTTPException(status_code=409, detail="username already taken")
+    level = (body.study_level or "high-school").strip().lower()
     user = User(
         id=str(uuid.uuid4()),
         username=username,
         password_hash=hash_password(body.password),
         display_name=(body.display_name or "").strip() or None,
+        study_level=level if level in _LEVELS else "high-school",
     )
     db.add(user)
+    db.flush()
+    seed_default_categories(db, user)
     db.commit()
     db.refresh(user)
     return _auth_response(user)
@@ -53,4 +63,20 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
 
 @router.get("/me", response_model=UserRead)
 def me(user: User = Depends(get_current_user)) -> UserRead:
+    return UserRead.model_validate(user)
+
+
+@router.patch("/me", response_model=UserRead)
+def update_me(
+    body: UserUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> UserRead:
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip() or None
+    if body.study_level is not None:
+        level = body.study_level.strip().lower()
+        if level not in _LEVELS:
+            raise HTTPException(status_code=422, detail=f"study_level must be one of {sorted(_LEVELS)}")
+        user.study_level = level
+    db.commit()
+    db.refresh(user)
     return UserRead.model_validate(user)

@@ -112,7 +112,6 @@ async def upload_document(
         category=category,
         source_type=parsed.kind,
         metadata={"filename": file.filename, "content_type": file.content_type},
-        tables=parsed.tables,
         slides=parsed.slides,
     )
     return _ingestion_response(doc, chunks, deduped, started)

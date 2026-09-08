@@ -28,16 +28,11 @@ anthropic>=0.40
 openai>=1.40
 numpy>=1.26
 
-# --- Document parsing --------------------------------------------------------
+# --- Study-material parsing -------------------------------------------------
 pypdf>=4.2
-python-docx>=1.1
-openpyxl>=3.1          # .xlsx workbooks
-xlrd>=2.0              # legacy .xls workbooks
+python-docx>=1.1       # .docx notes
 python-pptx>=1.0       # .pptx decks
-
-# --- Spreadsheet analytics (text-to-SQL over uploaded sheets) --------------
-duckdb>=1.1
-pandas>=2.2
+pillow>=10.3           # image normalisation for vision ingest
 
 # --- Observability -------------------------------------------------------
 opentelemetry-api>=1.25

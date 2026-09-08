@@ -67,16 +67,27 @@ class Settings(BaseSettings):
     min_evidence_score: float = 0.08
 
     # ------------------------------------------------------------------ uploads
-    # Max upload size. Spreadsheets and decks run larger than text docs.
-    max_upload_bytes: int = 15_000_000
+    # Max upload size. Slide decks and image scans run larger than text docs.
+    max_upload_bytes: int = 20_000_000
+    # Image uploads (diagrams, slide photos, handwritten problems, timetables)
+    # are described by a vision model at ingest time; that text is what gets
+    # embedded and retrieved. Needs a vision-capable LLM configured.
+    vision_enabled: bool = True
 
-    # ------------------------------------------------------ spreadsheet analytics
-    # Rows stored per sheet for text-to-SQL (older rows dropped, flagged truncated).
-    analysis_max_rows: int = 20_000
-    # Rows returned to the client / model from an analysis query.
-    analysis_result_row_cap: int = 200
-    # Hard timeout for a single generated SQL query.
-    analysis_sql_timeout_seconds: float = 8.0
+    # ------------------------------------------------------------------- tutor
+    # Default explanation depth when the user hasn't set one for the category.
+    # simple | standard | deep | exam
+    default_explain_level: Literal["simple", "standard", "deep", "exam"] = "standard"
+    # Study levels the tutor calibrates to (year 8 → undergraduate).
+    default_study_level: str = "high-school"
+
+    # -------------------------------------------------------------- assessment
+    # A generated practice set is always this shape: easy / medium / hard / brutal.
+    practice_tier_counts: dict[str, int] = Field(
+        default_factory=lambda: {"easy": 4, "medium": 4, "hard": 2, "brutal": 1}
+    )
+    # Cap on how many past attempts feed the progress dashboard aggregations.
+    progress_attempt_window: int = 2000
 
     # --------------------------------------------------------------- embeddings
     # "openai" also covers any OpenAI-compatible embeddings endpoint. If
@@ -97,18 +108,16 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
-    llm_max_tokens: int = 1400
-    llm_timeout_seconds: float = 45.0
-    # Answers below this confidence are surfaced with an "insufficient evidence"
-    # disclaimer instead of a confident-sounding response.
+    # Optional stronger model for the paths that need real reasoning — generating
+    # the "brutal" question, grading nuanced free-text answers, step-by-step
+    # worked solutions. Same endpoint/key as OPENAI_*; only the model name differs.
+    # Falls back to `openai_model` when unset.
+    hard_model: str | None = None
+    llm_max_tokens: int = 1600
+    llm_timeout_seconds: float = 60.0
+    # Answers the tutor can't ground in the user's materials are flagged rather
+    # than presented with false confidence.
     low_confidence_threshold: float = 0.35
-
-    # --------------------------------------------------------------- suggestions
-    # After each answer the model proposes 0-4 next steps the user accepts /
-    # rejects / marks done. Nothing is executed. Set false to switch it off.
-    suggestions_enabled: bool = True
-    # Max alternatives generated per suggestion slot when the user keeps rejecting.
-    suggestion_max_alternatives: int = 3
 
     # ---------------------------------------------------------------- caching
     answer_cache_ttl_seconds: int = 900
@@ -222,6 +231,15 @@ class Settings(BaseSettings):
             return self.anthropic_model
         if self.llm_provider == "openai" and self.openai_configured:
             return self.openai_model
+        return "offline-extractive"
+
+    @property
+    def hard_model_name(self) -> str:
+        """Model for reasoning-heavy paths (hard questions, free-text grading)."""
+        if self.llm_provider == "anthropic" and self.anthropic_api_key:
+            return self.anthropic_model
+        if self.llm_provider == "openai" and self.openai_configured:
+            return self.hard_model or self.openai_model
         return "offline-extractive"
 
 

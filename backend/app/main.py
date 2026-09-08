@@ -21,7 +21,6 @@ from app.routers import (
     documents_router,
     health_router,
     retrieval_router,
-    suggestions_router,
 )
 
 settings = get_settings()
@@ -56,8 +55,9 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.version,
         description=(
-            "StudyBuddy — hybrid RAG over business documents: cited, confidence-scored "
-            "answers with source passages, spreadsheet analytics, and next-step suggestions."
+            "StudyBuddy — an adaptive AI study tutor: grounded explanations with "
+            "citations to your uploaded notes, tiered practice questions with grading, "
+            "study guides, image understanding, notes and a progress dashboard."
         ),
         lifespan=lifespan,
     )
@@ -108,7 +108,6 @@ def create_app() -> FastAPI:
     app.include_router(categories_router, prefix=prefix)
     app.include_router(documents_router, prefix=prefix)
     app.include_router(retrieval_router, prefix=prefix)
-    app.include_router(suggestions_router, prefix=prefix)
 
     @app.get("/", include_in_schema=False)
     async def root():

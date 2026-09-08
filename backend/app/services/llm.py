@@ -1,14 +1,18 @@
-"""Answer synthesis with grounded, structured output.
+"""Tutor answer synthesis + a shared JSON-completion helper.
 
 Providers
 ---------
-``anthropic`` — ``claude-sonnet-5`` (default) via structured JSON output.
-``openai``    — chat completions with a JSON schema response format.
+``anthropic`` — ``claude-sonnet-5`` via structured JSON output.
+``openai``    — chat completions with a JSON response format (also covers any
+                OpenAI-compatible endpoint: Gemini, Groq, Mistral, Ollama, …).
 ``offline``   — deterministic extractive synthesis (no network, used in CI/dev).
 
-Every provider returns the same :class:`Synthesis` shape: prose answer with
-``[n]`` citation markers, a list of used markers with verbatim quotes, a
-self-reported confidence and follow-up questions.
+``synthesize`` returns a :class:`Synthesis`: a prose explanation with ``[n]``
+citation markers into the numbered context passages, the markers actually used
+(with verbatim quotes), a self-reported confidence and follow-up prompts.
+
+``json_complete`` is the low-level "one JSON object out" call used by the
+assessment / study-guide / vision services.
 """
 
 from __future__ import annotations
@@ -51,60 +55,66 @@ class Synthesis:
     provider: str = "offline"
     model: str = "offline-extractive"
     usage: dict = field(default_factory=dict)
+    grounded: bool = True
 
 
-_SYSTEM = (
-    "You are an enterprise knowledge assistant. Answer ONLY from the numbered "
-    "context passages provided. Rules:\n"
-    "1. Every factual sentence must cite its source with a bracketed marker like [1] or [2][3].\n"
-    "2. If the passages do not contain the answer, say so plainly and set confidence low. Never guess.\n"
-    "3. Be concise and specific. Prefer exact figures, dates, names and clauses from the passages.\n"
-    "4. 'confidence' is your calibrated probability (0-1) that the answer is fully correct and grounded.\n"
-    "5. 'citations' must quote the exact sentence(s) from the cited passage you relied on.\n"
-    "6. 'followUps' are up to 3 natural next questions the user might ask."
+# --------------------------------------------------------------------- prompts
+_LEVEL_GUIDE = {
+    "simple": "Explain in plain, everyday language a curious beginner would follow. "
+    "Short sentences, one idea at a time, a concrete everyday analogy. Avoid jargon; "
+    "if a technical term is unavoidable, define it in the same sentence.",
+    "standard": "Explain clearly for a motivated student meeting this properly for the "
+    "first time. Define terms as they come up, give a worked example, keep it tight.",
+    "deep": "Give a thorough explanation: the mechanism and the why, edge cases, how it "
+    "connects to neighbouring ideas, and a common misconception to avoid. Assume the "
+    "student already knows the basics.",
+    "exam": "Answer at the level and phrasing an examiner expects: precise definitions, "
+    "the key steps or criteria that earn marks, correct notation, and a model answer "
+    "structure. Note what a common answer gets wrong.",
+}
+
+_TUTOR_RULES = (
+    "You are StudyBuddy, a patient, encouraging personal tutor.\n"
+    "You have been given numbered passages from the student's OWN uploaded notes / "
+    "slides / textbook pages. Ground your explanation in them and cite with bracketed "
+    "markers like [1] or [2][3] on the sentences that use them.\n"
+    "Rules:\n"
+    "1. Teach — don't just quote. Explain in your own words, then point to the passage.\n"
+    "2. If the passages don't fully cover the question you MAY add correct standard "
+    "knowledge, but say briefly which part isn't from their materials, and lower "
+    "'confidence'.\n"
+    "3. If the passages are irrelevant or empty, still give a genuinely helpful answer "
+    "from standard knowledge, set 'grounded' false and 'confidence' to how sure you are.\n"
+    "4. Match the requested depth exactly (see the depth instruction in the prompt).\n"
+    "5. 'confidence' is your calibrated probability (0-1) the explanation is correct.\n"
+    "6. 'citations' quote the exact sentence(s) from the cited passage you used.\n"
+    "7. 'followUps' are up to 3 natural next things the student might want "
+    "(\"go deeper on X\", \"give me practice questions on Y\", \"explain Z more simply\")."
 )
 
-_COMPARE_SYSTEM = (
-    "You are an enterprise knowledge assistant comparing two or more documents. "
-    "The numbered context passages are drawn from different documents (the title "
-    "before each passage identifies which). Rules:\n"
-    "1. Answer the question by explicitly CONTRASTING what each document says — "
-    "state where they agree, where they differ, and what one adds that the other omits.\n"
-    "2. Cite every claim with a bracketed marker like [1] or [2][3], and make clear "
-    "which document each marker belongs to (use the passage titles).\n"
-    "3. If a document is silent on a point, say so.\n"
-    "4. 'confidence' is your calibrated probability (0-1) that the comparison is correct and grounded.\n"
-    "5. 'citations' must quote the exact sentence(s) you relied on.\n"
-    "6. 'followUps' are up to 3 natural next questions."
+_COMPARE_RULES = (
+    "You are StudyBuddy, a personal tutor. The numbered passages come from DIFFERENT "
+    "materials (the title before each says which). Answer by contrasting what each one "
+    "says — where they agree, where they differ, what one adds. Cite every claim with "
+    "[n] markers and make clear which material each belongs to. Same JSON shape and "
+    "depth rules as usual."
 )
 
-_DOCUMENT_SYSTEM = (
-    "You are an enterprise knowledge assistant. The numbered context passages are "
-    "the COMPLETE text of a single document, given in reading order. Rules:\n"
-    "1. Produce a faithful, well-structured summary or answer covering the whole "
-    "document — purpose, the key rules / figures / dates / obligations, and anything "
-    "notable. Use short paragraphs or bullet points.\n"
-    "2. Cite each point with a bracketed marker like [1] or [2][3] pointing at the "
-    "passage it came from.\n"
-    "3. Do NOT say the evidence is insufficient — the document itself is the evidence. "
-    "If the document simply doesn't address something, don't mention it.\n"
-    "4. 'confidence' is your calibrated probability (0-1) that the summary is faithful.\n"
-    "5. 'citations' must quote the exact sentence(s) you relied on.\n"
-    "6. 'followUps' are up to 3 natural next questions about this document."
+_DOCUMENT_RULES = (
+    "You are StudyBuddy, a personal tutor. The numbered passages are the COMPLETE text "
+    "of ONE of the student's materials, in reading order. Produce a faithful study "
+    "summary: what it covers, the key ideas / definitions / formulae / dates, and "
+    "anything an exam would test. Use short paragraphs or bullets, cite each point with "
+    "[n]. Never say the evidence is insufficient — the document is the evidence. Set "
+    "'grounded' true."
 )
 
-_OVERVIEW_SYSTEM = (
-    "You are an enterprise knowledge assistant. The numbered context passages are a "
-    "BROAD SAMPLE drawn from several different documents in the knowledge base (the "
-    "title before each passage identifies the document). Rules:\n"
-    "1. Give a synthesising overview that answers the question across the documents. "
-    "Group related points and name the documents they come from.\n"
-    "2. Cite every claim with a bracketed marker like [1] or [2][3].\n"
-    "3. Be clear about what the knowledge base does and does not cover. If the sample "
-    "looks thin for the question, say so and lower confidence.\n"
-    "4. 'confidence' is your calibrated probability (0-1) that the overview is correct.\n"
-    "5. 'citations' must quote the exact sentence(s) you relied on.\n"
-    "6. 'followUps' are up to 3 natural next questions."
+_OVERVIEW_RULES = (
+    "You are StudyBuddy, a personal tutor. The numbered passages are a BROAD SAMPLE from "
+    "several of the student's materials (the title before each says which). Give a "
+    "synthesising overview that answers the question across them, grouping related "
+    "points and naming their source. Cite with [n]. If the sample looks thin, say so "
+    "and lower confidence."
 )
 
 _SCHEMA = {
@@ -112,14 +122,12 @@ _SCHEMA = {
     "properties": {
         "answer": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "grounded": {"type": "boolean"},
         "citations": {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {
-                    "marker": {"type": "integer"},
-                    "quote": {"type": "string"},
-                },
+                "properties": {"marker": {"type": "integer"}, "quote": {"type": "string"}},
                 "required": ["marker", "quote"],
                 "additionalProperties": False,
             },
@@ -130,20 +138,48 @@ _SCHEMA = {
     "additionalProperties": False,
 }
 
+_JSON_HINT = (
+    '\n\nReturn ONLY a JSON object of this exact shape (no markdown fence):\n'
+    '{"answer": string, "confidence": number 0-1, "grounded": boolean, '
+    '"citations": [{"marker": integer, "quote": string}], "followUps": [string]}'
+)
+
 _SENT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
 
 
-def _prompt(question: str, passages: list[ContextPassage], history: str | None = None) -> str:
+def _depth_instruction(level: str) -> str:
+    return "Depth: " + _LEVEL_GUIDE.get(level, _LEVEL_GUIDE["standard"])
+
+
+_STUDENT_LEVELS = {
+    "year-8": "a Year 8 / middle-school student (~13 years old)",
+    "middle-school": "a middle-school student (~13 years old)",
+    "gcse": "a GCSE student (~15-16)",
+    "high-school": "a high-school student",
+    "a-level": "an A-level / senior high-school student (~17-18)",
+    "ib": "an IB diploma student",
+    "undergraduate": "a first- or second-year undergraduate",
+    "bachelors": "an undergraduate",
+}
+
+
+def _prompt(
+    question: str,
+    passages: list[ContextPassage],
+    *,
+    level: str = "standard",
+    student_level: str = "",
+    history: str | None = None,
+) -> str:
     blocks = [
         f"[{p.marker}] {p.title}" + (f" — {p.heading}" if p.heading else "") + f"\n{p.text}"
         for p in passages
     ]
     head = f"{history}\n\n" if history else ""
-    return (
-        head
-        + f"Question: {question}\n\nContext passages:\n\n"
-        + "\n\n---\n\n".join(blocks)
-    )
+    ctx = "\n\n---\n\n".join(blocks) if blocks else "(no passages retrieved from the student's materials)"
+    who = _STUDENT_LEVELS.get(student_level, student_level)
+    aud = f"The student is {who}. Pitch the content, examples and assumed background to that.\n" if who else ""
+    return f"{head}{aud}{_depth_instruction(level)}\n\nQuestion: {question}\n\nContext passages:\n\n{ctx}"
 
 
 # --------------------------------------------------------------------- offline
@@ -152,46 +188,44 @@ def _offline(
     passages: list[ContextPassage],
     mode: str = "pinpoint",
     *,
+    level: str = "standard",
+    student_level: str = "",
     degraded: bool = False,
 ) -> Synthesis:
     from app.services.reranker import _terms
 
-    prefix = "_(the model is busy — this is a simpler extractive answer)_\n\n" if degraded else ""
-
+    prefix = "_(the tutor model is busy — here's a simpler extract)_\n\n" if degraded else ""
     q_terms = set(_terms(question))
 
     if mode in ("document", "overview") and passages:
-        # No model: stitch the opening sentence of each passage into an outline.
         picked = []
         for p in passages[: (12 if mode == "document" else 8)]:
             first = next((s.strip() for s in _SENT_RE.split(p.text) if s.strip()), p.text[:200].strip())
             picked.append(CitationUse(marker=p.marker, quote=first))
         body = " ".join(f"{c.quote} [{c.marker}]" for c in picked)
-        lead = (
-            f"Outline of {passages[0].title}:" if mode == "document"
-            else "Across the knowledge base:"
-        )
+        lead = f"Study outline of {passages[0].title}:" if mode == "document" else "Across your materials:"
         return Synthesis(
             answer=f"{prefix}{lead} {body}",
             citations=picked,
             confidence=0.5,
-            follow_ups=[f"What are the specifics in {passages[0].title}?"],
+            follow_ups=[f"Give me practice questions on {passages[0].title}"],
         )
 
-    if not passages or (passages and passages[0].score < settings.min_evidence_score):
+    if not passages or passages[0].score < settings.min_evidence_score:
         return Synthesis(
             answer=(
-                "I could not find enough relevant information in the knowledge base to answer "
-                "this question confidently. Try rephrasing, widening the category filter, or "
-                "ingesting a document that covers this topic."
+                f"{prefix}I couldn't find this in your uploaded materials, and no tutor model is "
+                "configured to explain it from general knowledge. Try rephrasing, or upload a "
+                "note or slide that covers it."
             ),
             citations=[],
             confidence=0.12,
             follow_ups=[],
+            grounded=False,
         )
 
     picked: list[tuple[int, str]] = []
-    used_markers: list[CitationUse] = []
+    used: list[CitationUse] = []
     for p in passages[:4]:
         best_sent, best_overlap = "", 0
         for sent in _SENT_RE.split(p.text):
@@ -200,23 +234,23 @@ def _offline(
                 best_sent, best_overlap = sent.strip(), overlap
         sentence = best_sent or p.text[:240].strip()
         picked.append((p.marker, sentence))
-        used_markers.append(CitationUse(marker=p.marker, quote=sentence))
+        used.append(CitationUse(marker=p.marker, quote=sentence))
         if len(picked) >= 2 and best_overlap == 0:
             break
 
     body = " ".join(f"{sent} [{marker}]" for marker, sent in picked if sent)
-    answer = f"{prefix}Based on your documents: {body}"
     top = [p.score for p in passages[:3]]
     confidence = max(0.15, min(0.8, sum(top) / len(top))) if top else 0.15
-    follow_ups = [
-        f"What are the exceptions to this in {passages[0].title}?",
-        "Which team or role owns this?",
-    ]
-    return Synthesis(answer=answer, citations=used_markers, confidence=round(confidence, 3), follow_ups=follow_ups)
+    return Synthesis(
+        answer=f"{prefix}From your materials: {body}",
+        citations=used,
+        confidence=round(confidence, 3),
+        follow_ups=["Explain this more simply", "Give me practice questions on this"],
+    )
 
 
-# ------------------------------------------------------------------- anthropic
-def _anthropic(question: str, passages: list[ContextPassage], system: str, history: str | None) -> Synthesis:  # pragma: no cover
+# ------------------------------------------------------------------- providers
+def _anthropic(question, passages, system, level, student_level, history) -> Synthesis:  # pragma: no cover
     import anthropic
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -224,7 +258,8 @@ def _anthropic(question: str, passages: list[ContextPassage], system: str, histo
         model=settings.anthropic_model,
         max_tokens=settings.llm_max_tokens,
         system=system,
-        messages=[{"role": "user", "content": _prompt(question, passages, history)}],
+        messages=[{"role": "user", "content": _prompt(
+            question, passages, level=level, student_level=student_level, history=history)}],
         output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
     )
     text = next((b.text for b in resp.content if b.type == "text"), "{}")
@@ -237,24 +272,10 @@ def _anthropic(question: str, passages: list[ContextPassage], system: str, histo
     return _from_payload(data, provider="anthropic", model=settings.anthropic_model, usage=usage)
 
 
-# --------------------------------------------------------------------- openai
-# Also handles any OpenAI-compatible endpoint (Groq, Gemini, Mistral, OpenRouter,
-# Ollama, …) via OPENAI_BASE_URL. `json_object` mode is used because it is the
-# most widely supported JSON mode across those providers; the schema lives in the
-# system prompt.
-_JSON_HINT = (
-    '\n\nReturn ONLY a JSON object of this exact shape (no markdown fence):\n'
-    '{"answer": string, "confidence": number 0-1, '
-    '"citations": [{"marker": integer, "quote": string}], '
-    '"followUps": [string]}'
-)
-
-
-def _openai(question: str, passages: list[ContextPassage], system: str, history: str | None) -> Synthesis:  # pragma: no cover
+def _openai(question, passages, system, level, student_level, history) -> Synthesis:  # pragma: no cover
     from openai import OpenAI
 
     base_url = settings.openai_base_url or None
-    # Fail fast to the offline fallback rather than hang if the provider is slow.
     client = OpenAI(
         api_key=settings.openai_api_key or "not-needed",
         base_url=base_url,
@@ -262,19 +283,16 @@ def _openai(question: str, passages: list[ContextPassage], system: str, history:
         max_retries=2,
     )
     extra: dict = {}
-    model = settings.openai_model
-    # Many current models "reason" before answering, which can balloon latency on
-    # a simple grounded-RAG turn. Ask for minimal reasoning where the provider
-    # understands the hint (Gemini 2.5+/3, Groq gpt-oss/qwen, OpenAI o-series).
     if base_url and any(p in base_url for p in ("groq", "generativelanguage", "google")):
         extra["reasoning_effort"] = "low"
     resp = client.chat.completions.create(
-        model=model,
+        model=settings.openai_model,
         max_tokens=settings.llm_max_tokens,
-        temperature=0.0,  # grounded RAG: same passages → same answer/verdict
+        temperature=0.2,
         messages=[
             {"role": "system", "content": system + _JSON_HINT},
-            {"role": "user", "content": _prompt(question, passages, history)},
+            {"role": "user", "content": _prompt(
+                question, passages, level=level, student_level=student_level, history=history)},
         ],
         response_format={"type": "json_object"},
         **extra,
@@ -290,7 +308,6 @@ def _openai(question: str, passages: list[ContextPassage], system: str, history:
 
 
 def _coerce_str(item: object) -> str:
-    """Follow-ups sometimes come back as {'question': '...'} instead of a string."""
     if isinstance(item, str):
         return item.strip()
     if isinstance(item, dict):
@@ -319,6 +336,13 @@ def _from_payload(data: dict, *, provider: str, model: str, usage: dict) -> Synt
         provider=provider,
         model=model,
         usage=usage,
+        grounded=bool(data.get("grounded", True)),
+    )
+
+
+def provider_ready() -> bool:
+    return (settings.llm_provider == "anthropic" and bool(settings.anthropic_api_key)) or (
+        settings.llm_provider == "openai" and settings.openai_configured
     )
 
 
@@ -328,86 +352,69 @@ def synthesize(
     *,
     compare: bool = False,
     mode: str = "pinpoint",
+    level: str = "standard",
+    student_level: str = "",
     history: str | None = None,
 ) -> Synthesis:
     if compare:
-        system = _COMPARE_SYSTEM
+        system = _COMPARE_RULES
     elif mode == "document":
-        system = _DOCUMENT_SYSTEM
+        system = _DOCUMENT_RULES
     elif mode == "overview":
-        system = _OVERVIEW_SYSTEM
+        system = _OVERVIEW_RULES
     else:
-        system = _SYSTEM
+        system = _TUTOR_RULES
     with _tracer.start_as_current_span("llm.synthesize") as span:
         span.set_attribute("provider", settings.llm_provider)
         span.set_attribute("passages", len(passages))
-        span.set_attribute("compare", compare)
         span.set_attribute("mode", mode)
+        span.set_attribute("level", level)
         try:
             if settings.llm_provider == "anthropic" and settings.anthropic_api_key:
-                return _anthropic(question, passages, system, history)
+                return _anthropic(question, passages, system, level, student_level, history)
             if settings.llm_provider == "openai" and settings.openai_configured:
-                return _openai(question, passages, system, history)
+                return _openai(question, passages, system, level, student_level, history)
             degraded = False
         except Exception as exc:
             logger.warning("llm_synthesis_failed_falling_back", provider=settings.llm_provider, error=str(exc))
             span.record_exception(exc)
             degraded = True
-        return _offline(question, passages, mode, degraded=degraded)
+        return _offline(question, passages, mode, level=level, student_level=student_level, degraded=degraded)
 
 
-# ===================================================================== analysis
-# Text-to-SQL over uploaded spreadsheet data + narration of the result table.
+# ------------------------------------------------------ shared JSON completion
+def json_complete(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int | None = None,
+    hard: bool = False,
+    images: list[str] | None = None,
+) -> dict:
+    """One JSON-object completion via the configured provider. Raises on failure.
 
-
-def provider_ready() -> bool:
-    return (settings.llm_provider == "anthropic" and bool(settings.anthropic_api_key)) or (
-        settings.llm_provider == "openai" and settings.openai_configured
-    )
-
-
-_CLASSIFY_SYSTEM = (
-    "Classify what the user is asking for. One word:\n"
-    "- analysis : they want a figure, table, ranking, share, count, total, average, "
-    "trend or per-group breakdown computed FROM DATA (e.g. 'which product sells best', "
-    "'what % is from the top channel', 'sales by month', 'anything at a loss'). "
-    "Typos and loose phrasing are fine — judge the intent.\n"
-    "- summary : they want an overview of a whole document or the whole knowledge base.\n"
-    "- lookup : anything else — a specific fact, a policy detail, a how-to, a definition.\n"
-    'Return ONLY JSON: {"kind": "analysis" | "summary" | "lookup"}'
-)
-
-
-def classify_query(question: str) -> str:
-    """Cheap intent classifier — 'analysis' | 'summary' | 'lookup'.
-
-    Used by the query planner only when the fast keyword heuristics are
-    ambiguous, so it forgives typos and unusual phrasing. Falls back to
-    'lookup' offline or on any error.
+    ``hard`` routes to ``settings.hard_model`` (stronger reasoning) when set.
+    ``images`` is a list of ``data:`` URIs to attach (vision) — OpenAI-compatible
+    endpoints only.
     """
-    if not provider_ready():
-        return "lookup"
-    try:
-        data = _json_complete(_CLASSIFY_SYSTEM, f"Question: {question}", max_tokens=30)
-        kind = str(data.get("kind", "lookup")).strip().lower()
-        return kind if kind in ("analysis", "summary", "lookup") else "lookup"
-    except Exception as exc:  # pragma: no cover
-        logger.warning("classify_query_failed", error=str(exc))
-        return "lookup"
-
-
-def _json_complete(system: str, user: str, *, max_tokens: int | None = None) -> dict:
-    """One JSON-object completion via the configured provider. Raises on failure."""
     mt = max_tokens or settings.llm_max_tokens
     if settings.llm_provider == "anthropic" and settings.anthropic_api_key:
         import anthropic
 
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        content: list[dict] = [{"type": "text", "text": user}]
+        for uri in images or []:
+            if uri.startswith("data:") and ";base64," in uri:
+                meta, b64 = uri.split(";base64,", 1)
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": meta[5:], "data": b64},
+                })
         resp = client.messages.create(
             model=settings.anthropic_model,
             max_tokens=mt,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": content}],
         )
         text = next((b.text for b in resp.content if b.type == "text"), "{}")
         return json.loads(text[text.find("{") : text.rfind("}") + 1] or "{}")
@@ -424,13 +431,19 @@ def _json_complete(system: str, user: str, *, max_tokens: int | None = None) -> 
     extra: dict = {}
     if base_url and any(p in base_url for p in ("groq", "generativelanguage", "google")):
         extra["reasoning_effort"] = "low"
+    user_content: object = user
+    if images:
+        user_content = [{"type": "text", "text": user}] + [
+            {"type": "image_url", "image_url": {"url": uri}} for uri in images
+        ]
+    model = (settings.hard_model or settings.openai_model) if hard else settings.openai_model
     resp = client.chat.completions.create(
-        model=settings.openai_model,
+        model=model,
         max_tokens=mt,
-        temperature=0.0,
+        temperature=0.1,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content},
         ],
         response_format={"type": "json_object"},
         **extra,
@@ -439,180 +452,5 @@ def _json_complete(system: str, user: str, *, max_tokens: int | None = None) -> 
     return json.loads(raw[raw.find("{") : raw.rfind("}") + 1] or "{}")
 
 
-_SQL_SYSTEM = (
-    "You translate a business question into ONE read-only DuckDB SQL query over the "
-    "user's uploaded spreadsheet tables.\n"
-    "Rules:\n"
-    "1. Output a SINGLE statement beginning with SELECT or WITH. No semicolons, no DDL/DML, "
-    "no PRAGMA/SET/ATTACH/COPY, no file functions (read_csv, etc.).\n"
-    "2. Use only the tables and columns in the provided schema. You MAY JOIN tables.\n"
-    "3. Column names with spaces or punctuation are already sanitised in the schema — use "
-    "the identifiers shown.\n"
-    "4. Prefer explicit aggregates, GROUP BY, ORDER BY and a sensible LIMIT. For "
-    "'which X is most/least ...' return the row(s), not just the value.\n"
-    "5. Derive metrics the question implies (e.g. profit = revenue - cost, margin = "
-    "profit / revenue) inline. Cast text-numbers with TRY_CAST.\n"
-    "6. If the question cannot be answered from the schema, set \"sql\" to \"\" and explain "
-    "in \"assumptions\".\n"
-    'Return ONLY JSON: {"sql": string, "assumptions": string} — "assumptions" states any '
-    "column-meaning guesses or filters you applied."
-)
-
-_ANALYSIS_SYSTEM = (
-    "You are a data analyst. You are given a business question, the SQL that was run over "
-    "the user's spreadsheet(s), and the resulting rows. Optionally some passages from other "
-    "documents are provided for context.\n"
-    "Write a short, direct answer to the question grounded ONLY in the result rows (and the "
-    "context passages if relevant). Quote concrete figures. If passages are used, cite them "
-    "with [1], [2] markers matching their numbers. Do not invent numbers not present in the "
-    "result.\n"
-    'Return ONLY JSON: {"answer": string, "confidence": number 0-1, '
-    '"citations": [{"marker": integer, "quote": string}], "followUps": [string]}'
-)
-
-
-def generate_sql(question: str, schema: str, *, history: str | None = None, prior_error: str | None = None) -> tuple[str, str]:
-    """Return ``(sql, assumptions)``. ``sql`` is "" when the model declines."""
-    parts = [f"Schema:\n{schema}"]
-    if history:
-        parts.append(history)
-    if prior_error:
-        parts.append(f"The previous query failed with: {prior_error}\nFix it.")
-    parts.append(f"Question: {question}")
-    data = _json_complete(_SQL_SYSTEM, "\n\n".join(parts), max_tokens=700)
-    return str(data.get("sql", "")).strip(), str(data.get("assumptions", "")).strip()
-
-
-def narrate_analysis(
-    question: str,
-    sql: str,
-    columns: list[str],
-    rows: list[list],
-    *,
-    context_passages: list[ContextPassage] | None = None,
-) -> Synthesis:
-    """Turn a result table into a grounded prose answer."""
-    table_md = "| " + " | ".join(columns) + " |\n" + "| " + " | ".join("---" for _ in columns) + " |\n"
-    table_md += "\n".join(
-        "| " + " | ".join("" if c is None else str(c) for c in r) + " |" for r in rows[:50]
-    )
-    blocks = [f"Question: {question}", f"SQL:\n{sql}", f"Result ({len(rows)} rows):\n{table_md}"]
-    if context_passages:
-        ctx = "\n\n".join(
-            f"[{p.marker}] {p.title}" + (f" — {p.heading}" if p.heading else "") + f"\n{p.text}"
-            for p in context_passages
-        )
-        blocks.append(f"Context passages:\n{ctx}")
-    try:
-        data = _json_complete(_ANALYSIS_SYSTEM, "\n\n".join(blocks), max_tokens=900)
-        return _from_payload(
-            data, provider=settings.llm_provider, model=settings.active_model_name, usage={}
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.warning("narrate_analysis_failed", error=str(exc))
-        n = len(rows)
-        summary = (
-            f"The query returned {n} row{'s' if n != 1 else ''}. "
-            + (f"First row: {dict(zip(columns, rows[0], strict=False))}." if rows else "")
-        )
-        return Synthesis(answer=summary, citations=[], confidence=0.4, follow_ups=[])
-
-
-# =================================================================== suggestions
-# After an answer, propose concrete next steps the user can accept / reject / mark
-# done. Nothing is executed — these are recommendations.
-
-_SUGGEST_SYSTEM = (
-    "You are given a user's question, the answer they were just given, and the source "
-    "passages it drew on. Propose the concrete NEXT STEPS the user could take now.\n"
-    "Rules:\n"
-    "1. 0 to 3 steps. Be conservative — only suggest a step when the answer clearly implies "
-    "an action. A question that just asks for a fact, definition, number or policy detail "
-    "('what is the refund window?', 'how much is shipping?') usually needs ZERO steps → "
-    'return {"steps": []}.\n'
-    "2. A step is warranted when the question describes a SITUATION to handle (a complaint, a "
-    "loss-making product, low stock, a late order) — then propose what to do about it.\n"
-    "3. Each step: a short imperative sentence (e.g. 'Email the customer offering a "
-    "replacement', 'Flag the Amber candle for repricing'), plus a one-line reason grounded "
-    "in the answer or passages. Do NOT restate the answer.\n"
-    "4. priority is 'high' | 'medium' | 'low'. Steps are things a person does, not things "
-    "you do.\n"
-    "5. kind is 'explore' when the step can be answered right now purely from the uploaded "
-    "documents / spreadsheets (e.g. 'Check which products are below reorder level', 'Review "
-    "the refund rate by month') — or 'external' when it needs a person or another system "
-    "(sending an email, changing a price in a shop, contacting a supplier).\n"
-    'Return ONLY JSON: {"steps": [{"text": string, "rationale": string, "priority": string, '
-    '"kind": "explore" | "external"}]}'
-)
-
-_ALT_SYSTEM = (
-    "You previously proposed next steps for this question; the user rejected the ones listed "
-    "below. Propose ONE different next step (same JSON shape, including 'kind'), or return null "
-    "if there is no genuinely better or different option.\n"
-    'Return ONLY JSON: {"step": {"text": string, "rationale": string, "priority": string, '
-    '"kind": "explore" | "external"} | null}'
-)
-
-
-@dataclass
-class SuggestedStep:
-    text: str
-    rationale: str
-    priority: str = "medium"
-    kind: str = "external"
-
-
-def _coerce_step(d: object) -> SuggestedStep | None:
-    if not isinstance(d, dict) or not str(d.get("text", "")).strip():
-        return None
-    pr = str(d.get("priority", "medium")).lower()
-    kind = str(d.get("kind", "external")).lower()
-    return SuggestedStep(
-        text=str(d["text"]).strip(),
-        rationale=str(d.get("rationale", "")).strip(),
-        priority=pr if pr in ("high", "medium", "low") else "medium",
-        kind="explore" if kind == "explore" else "external",
-    )
-
-
-def _answer_context(question: str, answer_text: str, passages: list[ContextPassage]) -> str:
-    ctx = "\n\n".join(
-        f"- {p.title}" + (f" ({p.heading})" if p.heading else "") + f": {p.text[:500]}"
-        for p in passages[:5]
-    )
-    return f"Question: {question}\n\nAnswer given:\n{answer_text[:1500]}\n\nSource passages:\n{ctx}"
-
-
-def suggest_actions(
-    question: str, answer_text: str, passages: list[ContextPassage]
-) -> list[SuggestedStep]:
-    if not provider_ready():
-        return []
-    try:
-        data = _json_complete(
-            _SUGGEST_SYSTEM, _answer_context(question, answer_text, passages), max_tokens=600
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.warning("suggest_actions_failed", error=str(exc))
-        return []
-    steps = [s for s in (_coerce_step(x) for x in data.get("steps", [])) if s]
-    return steps[:3]
-
-
-def suggest_alternative(
-    question: str,
-    answer_text: str,
-    passages: list[ContextPassage],
-    rejected: list[str],
-) -> SuggestedStep | None:
-    if not provider_ready():
-        return None
-    body = _answer_context(question, answer_text, passages) + "\n\nRejected steps:\n" + "\n".join(
-        f"- {r}" for r in rejected
-    )
-    try:
-        data = _json_complete(_ALT_SYSTEM, body, max_tokens=400)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("suggest_alternative_failed", error=str(exc))
-        return None
-    return _coerce_step(data.get("step"))
+# Back-compat alias (older imports).
+_json_complete = json_complete

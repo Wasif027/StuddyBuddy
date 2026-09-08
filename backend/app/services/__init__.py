@@ -1,4 +1,4 @@
-"""Services package — business logic (embeddings, retrieval, rerank, RAG, analytics)."""
+"""Services package — business logic (embeddings, retrieval, rerank, tutor RAG)."""
 
 from app.services.embeddings import embed_text, embed_texts
 from app.services.ingestion import ingest_content, parse_upload

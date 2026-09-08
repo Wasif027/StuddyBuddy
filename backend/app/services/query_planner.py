@@ -1,19 +1,13 @@
 """Decide *how* to retrieve for a question before retrieving.
 
-Naive passage retrieval answers "what is the re-delivery fee?" well but fails
-"summarise the driver handbook" or "which product sold at a loss". This module
-classifies the question and picks a strategy:
-
 * ``pinpoint``  — the default: hybrid search + rerank, a handful of passages.
-* ``document``  — the question targets one named document (optionally "summarise
-  …"): load *all* of that document's chunks, in order, and skip ranking.
+* ``document``  — the question targets one named material (or "summarise …"):
+  load *all* of that document's chunks, in order, and skip ranking.
 * ``overview``  — a broad "summarise / key points / tell me about" question with
-  no single target: retrieve wide and force diversity across documents.
-* ``analysis`` — an analytic question over uploaded spreadsheet data: hand off to
-  text-to-SQL (``services.analysis``) instead of passage retrieval.
+  no single target: retrieve wide and force diversity across materials.
 
-A named document also tightens ``pinpoint`` — "what does the BrightMart
-agreement say about liability?" is scoped to that document.
+A named document also tightens ``pinpoint`` — "what does slide deck 3 say about
+mitosis?" is scoped to that document.
 """
 
 from __future__ import annotations
@@ -27,50 +21,35 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.orm import Document, User
-from app.services.llm import classify_query
 
 settings = get_settings()
 
-RetrievalMode = Literal["pinpoint", "document", "overview", "analysis"]
+RetrievalMode = Literal["pinpoint", "document", "overview"]
 
-_SHEET_KINDS = {"xlsx", "xls"}
-
-# "give me the gist", "walk me through", "what's in this doc", "key points" …
 _SUMMARY_RE = re.compile(
     r"\b(summar(y|ise|ize|ising|izing)|overview|recap|gist|tl;?dr|synops(is|e)|"
-    r"key (points|takeaways|facts)|main (points|ideas)|"
+    r"key (points|takeaways|facts|ideas)|main (points|ideas)|study guide|revise|revision|"
     r"walk me through|brief me|high[- ]level|at a glance|run[- ]?down|"
     r"tell me (about|what)|what('s| is| does).{0,30}(say|cover|contain|in it|about)|"
-    r"outline|breakdown|break it down)\b",
+    r"outline|breakdown|break it down|go over)\b",
     re.IGNORECASE,
 )
 _WHOLE_DOC_RE = re.compile(
-    r"\b(the (whole|entire|full)|this (document|doc|file|policy|contract|report|handbook)|"
-    r"the (document|doc|file) (called|titled|named))\b",
-    re.IGNORECASE,
-)
-# analytic intent — computation / aggregation / ranking over records
-_ANALYSIS_RE = re.compile(
-    r"\b(calculate|compute|how many|how much|number of|count|total|sum|subtotal|average|"
-    r"avg|mean|median|min(imum)?|max(imum)?|most|least|highest|lowest|top\s+\d+|bottom\s+\d+|"
-    r"rank|ranking|per\s+\w+|by\s+(month|region|product|category|customer|quarter|year|week|day)|"
-    r"breakdown by|group(ed)? by|at a loss|loss-?making|unprofitable|profit|margin|revenue|"
-    r"turnover|sales|units? sold|quantity|trend|growth|decline|year[- ]over[- ]year|"
-    r"month[- ]over[- ]month|yoy|mom|% ?(change|of)|percentage|share of|outlier|anomal|"
-    r"which (product|customer|region|order|month|item|sku|category)|what (was|were|is) the total)\b",
+    r"\b(the (whole|entire|full)|this (document|doc|file|deck|slides|chapter|pdf|notes)|"
+    r"(document|doc|file|deck|notes) (called|titled|named))\b",
     re.IGNORECASE,
 )
 _SLIDE_FOCUS_RE = re.compile(
-    r"\b(slide|slides|chart|charts|graph|figure|data|numbers?|important|key|interesting|"
+    r"\b(slide|slides|chart|charts|graph|figure|diagram|important|key|interesting|"
     r"highlight|takeaway)\b",
     re.IGNORECASE,
 )
 
 _STOP = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "de",
-    "doc", "document", "file", "pdf", "xlsx", "sheet", "spreadsheet", "deck", "please",
+    "doc", "document", "file", "pdf", "slides", "deck", "notes", "chapter", "please",
     "me", "my", "our", "about", "give", "provide", "show", "tell", "summary", "summarise",
-    "summarize", "version", "data",
+    "summarize", "explain", "version",
 }
 
 
@@ -115,9 +94,7 @@ def _match_document(question: str, docs: list[tuple[str, str, str]]) -> tuple[st
             score = ratio + hit * 0.1
         if best is None or score > best[0]:
             best = (score, doc_id, title, kind)
-    if best is None:
-        return None
-    return best[1], best[2], best[3]
+    return (best[1], best[2], best[3]) if best else None
 
 
 def plan_retrieval(
@@ -138,83 +115,28 @@ def plan_retrieval(
             )
         ).all()
     )
-    kind_by_id = {i: k for i, _, k in docs}
     title_by_id = {i: t for i, t, _ in docs}
-    sheets_in_scope = [
-        (i, t) for i, t, k in docs if k in _SHEET_KINDS and (not category_id)
-    ]
-    # (category scoping of sheets is by the caller's Scope; here we only need to
-    #  know whether *a* spreadsheet is reachable for an analytic question)
-    all_sheets = [(i, t) for i, t, k in docs if k in _SHEET_KINDS]
 
-    # ---- explicit intent from the UI ----------------------------------------
-    if intent == "analysis":
-        target = document_id or (all_sheets[0][0] if all_sheets else None)
-        if target and kind_by_id.get(target) in _SHEET_KINDS:
-            return RetrievalPlan(
-                mode="analysis",
-                document_id=target,
-                document_title=title_by_id.get(target),
-                reason=f'computed from "{title_by_id.get(target, target)}"',
-            )
     if intent == "summary" and document_id and document_id in title_by_id:
         return RetrievalPlan(
             mode="document",
             document_id=document_id,
             document_title=title_by_id[document_id],
             k=settings.document_mode_max_chunks,
-            reason=f'full-document read of "{title_by_id[document_id]}"',
+            reason=f'full read of "{title_by_id[document_id]}"',
         )
     if document_id and document_id in title_by_id:
-        title = title_by_id[document_id]
         return RetrievalPlan(
             mode="document",
             document_id=document_id,
-            document_title=title,
+            document_title=title_by_id[document_id],
             k=settings.document_mode_max_chunks,
-            reason=f'full-document read of "{title}"',
+            reason=f'full read of "{title_by_id[document_id]}"',
         )
 
     matched = _match_document(question, docs) if docs else None
     wants_summary = bool(_SUMMARY_RE.search(question))
     whole_doc = bool(_WHOLE_DOC_RE.search(question))
-    analytic = bool(_ANALYSIS_RE.search(question))
-    reachable = sheets_in_scope or all_sheets
-
-    # ---- ambiguous phrasing / typos: ask the model what they meant --------
-    # Only when the fast heuristics gave no signal AND a spreadsheet is around
-    # (so a mis-worded "waht sells best" still reaches the analytics path).
-    if reachable and not analytic and not matched and not wants_summary and not whole_doc:
-        kind = classify_query(question)
-        if kind == "analysis":
-            analytic = True
-        elif kind == "summary":
-            wants_summary = True
-
-    # ---- analytic question + at least one spreadsheet is reachable --------
-    # If the question names a sheet, target it; otherwise leave document_id None
-    # and let run_analysis register every spreadsheet in scope (it can JOIN
-    # across them). If the model then can't build a query, rag falls back to
-    # normal retrieval — so over-routing here is safe.
-    if analytic and reachable:
-        if matched and matched[2] in _SHEET_KINDS:
-            target_id = matched[0]
-            title = title_by_id.get(target_id, target_id)
-            reason = f'computed from "{title}"'
-        else:
-            target_id = None
-            title = None
-            reason = (
-                f'computed from "{reachable[0][1]}"'
-                if len(reachable) == 1
-                else "computed from your spreadsheet data"
-            )
-        return RetrievalPlan(
-            mode="analysis",
-            document_id=target_id,
-            document_title=title,
-            reason=reason,
-        )
 
     if matched and (wants_summary or whole_doc):
         return RetrievalPlan(
@@ -223,7 +145,7 @@ def plan_retrieval(
             document_title=matched[1],
             k=settings.document_mode_max_chunks,
             slide_focus=matched[2] == "pptx" and bool(_SLIDE_FOCUS_RE.search(question)),
-            reason=f'full-document read of "{matched[1]}"',
+            reason=f'full read of "{matched[1]}"',
         )
     if matched:
         return RetrievalPlan(
@@ -239,6 +161,6 @@ def plan_retrieval(
             mode="overview",
             k=max(base_k * 2, 12),
             per_document_cap=3,
-            reason="broad scan across the knowledge base",
+            reason="broad scan across your materials",
         )
     return RetrievalPlan(mode="pinpoint", k=base_k, reason="default passage retrieval")

@@ -1,10 +1,10 @@
-"""Document ingestion: parse → chunk → embed → persist.
+"""Study-material ingestion: parse → chunk → embed → persist.
 
-Accepts the file types businesses actually use — ``.pdf``, ``.docx``, ``.xlsx`` /
-``.xls``, ``.pptx`` — plus raw pasted text. Spreadsheets are additionally stored
-sheet-by-sheet as queryable tables (:class:`DocumentTable`) for text-to-SQL, and
-decks slide-by-slide (:class:`DocumentSlide`). Ingestion is idempotent on a
-SHA-256 of the extracted text.
+Accepts ``.pdf``, ``.docx``, ``.pptx`` and image scans (``.png`` / ``.jpg`` /
+``.webp``) plus raw pasted text. Decks are also stored slide-by-slide
+(:class:`DocumentSlide`); images are described by a vision model at ingest and
+that description is what gets embedded. Ingestion is idempotent on a SHA-256 of
+the extracted text.
 """
 
 from __future__ import annotations
@@ -22,20 +22,20 @@ from sqlalchemy.orm import Session
 from app.core import cache
 from app.core.logging import get_logger
 from app.core.telemetry import tracer
-from app.models.orm import Chunk, Document, DocumentSlide, DocumentStatus, DocumentTable
+from app.models.orm import Chunk, Document, DocumentSlide, DocumentStatus
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
-from app.services.parsing import ParsedSlide, ParsedTable, ParsedUpload
+from app.services.parsing import ParsedSlide, ParsedUpload
 
 logger = get_logger(__name__)
 _tracer = tracer(__name__)
 
-# Business formats only. Plain-text / markdown go through the "paste" flow.
-SUPPORTED_UPLOAD_TYPES = {".pdf", ".docx", ".xlsx", ".xls", ".pptx"}
+DOC_UPLOAD_TYPES = {".pdf", ".docx", ".pptx"}
+IMAGE_UPLOAD_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+SUPPORTED_UPLOAD_TYPES = DOC_UPLOAD_TYPES | IMAGE_UPLOAD_TYPES
 
 _SLIDE_HEADING_RE = re.compile(r"^slide\s+(\d+)", re.IGNORECASE)
 _PAGE_HEADING_RE = re.compile(r"^page\s+(\d+)", re.IGNORECASE)
-_SHEET_HEADING_RE = re.compile(r"^sheet:\s*(.+)$", re.IGNORECASE)
 
 
 class UnsupportedFileType(ValueError):
@@ -65,8 +65,8 @@ def _parse_pdf(data: bytes) -> str:
     text = "\n\n".join(f"## Page {i + 1}\n\n{t}" for i, t in enumerate(pages) if t)
     if not text.strip():
         raise ParseError(
-            "this PDF has no selectable text — it looks like a scan. Text extraction "
-            "from scanned images (OCR) isn't supported yet."
+            "this PDF has no selectable text — it looks like a scan. Upload it as an "
+            "image instead and I'll read it with the vision model."
         )
     return text
 
@@ -91,7 +91,6 @@ def _parse_docx(data: bytes) -> str:
             parts.append(f"## {text}")
         else:
             parts.append(text)
-    # tables (python-docx keeps these separate from paragraphs)
     from app.services.parsing import markdown_table
 
     for table in document.tables:
@@ -102,7 +101,10 @@ def _parse_docx(data: bytes) -> str:
 
 
 def parse_upload(filename: str, data: bytes) -> ParsedUpload:
-    """Parse an uploaded business file into text (+ tables / slides where applicable)."""
+    """Parse an uploaded study material into text (+ slides for decks).
+
+    Image uploads are handled separately by :mod:`app.services.vision`.
+    """
     name = (filename or "document").rsplit("/", 1)[-1]
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     title = name.rsplit(".", 1)[0] if "." in name else name
@@ -111,18 +113,6 @@ def parse_upload(filename: str, data: bytes) -> ParsedUpload:
         return ParsedUpload(title=title, kind="pdf", text=_parse_pdf(data))
     if ext == ".docx":
         return ParsedUpload(title=title, kind="docx", text=_parse_docx(data))
-    if ext in {".xlsx", ".xls"}:
-        from app.services.xlsx_parse import parse_workbook
-
-        try:
-            tables, preview = parse_workbook(name, data)
-        except ParseError:
-            raise
-        except Exception as exc:
-            raise ParseError("couldn't read this spreadsheet — it may be corrupted") from exc
-        if not tables:
-            raise ParseError("this spreadsheet appears to be empty")
-        return ParsedUpload(title=title, kind="xlsx", text=preview, tables=tables)
     if ext == ".pptx":
         from app.services.pptx_parse import parse_deck
 
@@ -132,7 +122,8 @@ def parse_upload(filename: str, data: bytes) -> ParsedUpload:
             raise ParseError("couldn't read this presentation — it may be corrupted") from exc
         if not any(s.bullets or s.tables or s.title for s in slides):
             raise ParseError(
-                "this presentation has no extractable text — it may be entirely images"
+                "this presentation has no extractable text — upload the slides as images "
+                "instead and I'll read them with the vision model."
             )
         return ParsedUpload(title=title, kind="pptx", text=deck_md, slides=slides)
     raise UnsupportedFileType(f"unsupported file type: {ext or 'unknown'}")
@@ -152,18 +143,10 @@ def _chunk_location(kind: str, heading: str | None, slides_by_idx: dict[int, Par
             return {}
         n = int(m.group(1))
         s = slides_by_idx.get(n)
-        meta = {"kind": "slide", "slide": n}
+        loc = {"kind": "slide", "slide": n}
         if s:
-            meta.update(
-                title=s.title,
-                dataScore=s.data_score,
-                hasChart=s.has_chart,
-                hasTable=s.has_table,
-            )
-        return meta
-    if kind == "xlsx":
-        m = _SHEET_HEADING_RE.match(h)
-        return {"kind": "sheet", "sheet": m.group(1).strip()} if m else {"kind": "sheet"}
+            loc.update(title=s.title, dataScore=s.data_score, hasChart=s.has_chart, hasTable=s.has_table)
+        return loc
     return {}
 
 
@@ -175,9 +158,8 @@ def ingest_content(
     title: str,
     content: str,
     category: str | None = None,
-    source_type: str = "document",
+    source_type: str = "text",
     metadata: dict[str, Any] | None = None,
-    tables: list[ParsedTable] | None = None,
     slides: list[ParsedSlide] | None = None,
 ) -> tuple[Document, int, bool]:
     started = time.perf_counter()
@@ -228,24 +210,6 @@ def ingest_content(
                         token_count=piece.token_count,
                         embedding=vector,
                         metadata_json={**(piece.metadata or {}), **loc},
-                    )
-                )
-
-            for pos, t in enumerate(tables or []):
-                db.add(
-                    DocumentTable(
-                        id=str(uuid.uuid4()),
-                        document_id=doc.id,
-                        sheet_name=t.sheet_name,
-                        sql_name=t.sql_name,
-                        position=pos,
-                        columns_json=[
-                            {"name": c.name, "sqlName": c.sql_name, "type": c.type}
-                            for c in t.columns
-                        ],
-                        row_count=t.row_count,
-                        truncated=t.truncated,
-                        rows_json=t.rows,
                     )
                 )
 

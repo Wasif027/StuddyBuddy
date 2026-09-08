@@ -1,6 +1,6 @@
-"""Conversational / meta answers — greetings, "what can you do", "what have I
-uploaded", counts, and gibberish. Answered directly (no retrieval), so the user
-never sees an "insufficient evidence" banner for a hello.
+"""Conversational / meta replies — greetings, "what can you do", "what have I
+uploaded", counts, gibberish. Answered directly (no retrieval) so a hello never
+triggers the retrieval pipeline.
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ MetaKind = Literal["greeting", "thanks", "capability", "doc_list", "count", "gib
 
 _GREETING_RE = re.compile(
     r"^\s*(hi|hey+|hello+|yo|hiya|howdy|sup|good\s+(morning|afternoon|evening|day)|greetings)"
-    r"(\s+(there|all|everyone|folks|team|claude))?[\s!.,]*$",
+    r"(\s+(there|all|studybuddy|buddy|tutor))?[\s!.,]*$",
     re.IGNORECASE,
 )
 _THANKS_RE = re.compile(
     r"^\s*(thanks?|thank\s+you|ty|thx|cheers|much\s+appreciated|great|perfect|awesome|"
-    r"nice|cool|got\s+it|ok(ay)?|sounds?\s+good)[\s!.,]*$",
+    r"nice|cool|got\s+it|ok(ay)?|sounds?\s+good|makes\s+sense)[\s!.,]*$",
     re.IGNORECASE,
 )
 _CAPABILITY_RE = re.compile(
@@ -32,27 +32,15 @@ _CAPABILITY_RE = re.compile(
     re.IGNORECASE,
 )
 _DOC_LIST_RE = re.compile(
-    r"\b(what\s+(documents|files|docs|data)\s+(do\s+i\s+have|have\s+i\s+(uploaded|added|got)|"
-    r"are\s+(there|here|loaded|uploaded))|list\s+(my\s+|all\s+)?(documents|files|docs)|"
-    r"show\s+(me\s+)?(my\s+)?(documents|files|uploads)|what('?s| is)\s+in\s+(my\s+|the\s+)?"
-    r"(knowledge\s+base|library|documents))\b",
+    r"\b(what\s+(materials|documents|files|docs|notes|slides)\s+(do\s+i\s+have|have\s+i\s+"
+    r"(uploaded|added|got)|are\s+(there|here|loaded|uploaded))|list\s+(my\s+|all\s+)?"
+    r"(materials|documents|files|docs|notes)|show\s+(me\s+)?(my\s+)?(materials|documents|files|uploads))\b",
     re.IGNORECASE,
 )
 _COUNT_RE = re.compile(
-    r"\bhow\s+many\s+(documents|files|docs|chats|conversations|uploads)\b", re.IGNORECASE
+    r"\bhow\s+many\s+(materials|documents|files|docs|notes|chats|conversations|uploads)\b",
+    re.IGNORECASE,
 )
-
-_LABELS = {
-    "policy": "Policies", "contract": "Contracts", "runbook": "Runbooks",
-    "tech-doc": "Technical Docs", "meeting-notes": "Meeting Notes", "incident": "Incidents",
-    "hr": "HR", "finance": "Finance", "legal": "Legal", "security": "Security",
-    "sales": "Sales", "data": "Data & Reports", "deck": "Decks", "uncategorized": "Uncategorised",
-}
-
-
-def _label(cat: str | None) -> str:
-    key = cat or "uncategorized"
-    return _LABELS.get(key, key.replace("-", " ").replace("_", " ").title())
 
 
 def detect(question: str) -> MetaKind | None:
@@ -86,49 +74,61 @@ def _docs(db: Session, user: User) -> list[tuple[str, str | None]]:
     )
 
 
-def _example_questions(cats: set[str | None]) -> list[str]:
-    ex: list[str] = []
-    if any(c in ("sales", "data") for c in cats):
-        ex.append("which product is least profitable?")
-    if "deck" in cats:
-        ex.append("summarise the latest deck")
-    ex.append("what does the returns policy say?" if "policy" in cats else "what are the key points across my documents?")
-    return ex[:3]
+def _label(db: Session, user_id: str, slug: str | None) -> str:
+    from app.services.catalog import category_label
+
+    return category_label(db, user_id, slug)
 
 
 def answer(db: Session, user: User, kind: MetaKind) -> str:
+    name = (user.display_name or user.username or "").split(" ")[0]
+    hey = f"Hi {name}" if name else "Hi"
+
     if kind == "thanks":
-        return "You're welcome."
+        return "You're welcome — ask me anything else, or say *practice questions on …* when you want to test yourself."
     if kind == "gibberish":
-        return "I didn't catch that — ask a question about your documents, or click **Add document** if you haven't uploaded anything yet."
+        return (
+            "I didn't quite catch that. Ask me to explain a topic, upload your notes or "
+            "slides, or say *give me practice questions on …*."
+        )
 
     docs = _docs(db, user)
     n = len(docs)
-    cats = {c for _, c in docs}
-    cat_str = ", ".join(sorted(_label(c) for c in cats)) if cats else ""
 
     if kind == "greeting":
         if not n:
-            return "Hi — I answer questions about files you upload. Click **Add document** to add a PDF, Word doc, spreadsheet or slide deck, then ask away."
-        ex = "\n".join(f"- *{e}*" for e in _example_questions(cats))
-        return f"Hi — ask me anything about your {n} document{'s' if n != 1 else ''}. For example:\n{ex}"
+            return (
+                f"{hey}! I'm StudyBuddy, your study tutor. Ask me to explain any topic up to "
+                "undergraduate level — I'll pitch it to your level and can go simpler or deeper "
+                "on request. Upload your notes, slides or textbook pages and I'll ground the "
+                "explanations in them. When you're ready to test yourself, ask for practice "
+                "questions.\n\nWhat would you like to work on today?"
+            )
+        return (
+            f"{hey}! What would you like to work on? I can explain a topic, quiz you with a set "
+            f"of practice questions, or work through your {n} uploaded "
+            f"material{'s' if n != 1 else ''}."
+        )
 
     if kind == "capability":
-        base = (
-            "I answer questions grounded in the files you upload — **PDF, Word, Excel, "
-            "PowerPoint** — always with citations back to the source. I can:\n"
-            "- **answer questions** about your documents\n"
-            "- **run calculations** over spreadsheets (totals, rankings, margins, trends…)\n"
-            "- **summarise** a document or a slide deck\n"
-            "- **compare** two documents\n"
-            "- suggest **next steps** an answer implies"
+        return (
+            "I'm a study tutor. I can:\n"
+            "- **explain any topic** up to undergraduate level, pitched to you — ask for it "
+            "*simpler*, *deeper* or *exam-style* any time\n"
+            "- **ground explanations in your own materials** (PDF, Word, slides, photos) with "
+            "citations back to the page or slide\n"
+            "- **set practice questions** — 4 easy, 4 medium, 2 hard and 1 very hard — at your "
+            "level, then mark your answers with feedback\n"
+            "- build **study guides, glossaries, concept maps and flashcards** from a document\n"
+            "- read a **photo** — a diagram, a worked problem, a page of notes, or your class "
+            "timetable\n"
+            "- keep **notes** and a learning log, and track your **progress** and weak spots\n\n"
+            + (
+                f"You have **{n}** material{'s' if n != 1 else ''} uploaded."
+                if n
+                else "Upload your first material to get started, or just ask me to explain something."
+            )
         )
-        if n:
-            base += f"\n\nYou currently have **{n}** document{'s' if n != 1 else ''}"
-            base += f" across {cat_str}." if cat_str else "."
-        else:
-            base += "\n\nYou haven't added any documents yet — click **Add document** to start."
-        return base
 
     if kind == "count":
         chats = db.execute(
@@ -136,11 +136,11 @@ def answer(db: Session, user: User, kind: MetaKind) -> str:
                 Conversation.user_id == user.id, Conversation.archived.is_(False)
             )
         ).scalar_one()
-        return f"You have **{n}** document{'s' if n != 1 else ''} and **{chats}** chat{'s' if chats != 1 else ''}."
+        return f"You have **{n}** material{'s' if n != 1 else ''} and **{chats}** chat{'s' if chats != 1 else ''}."
 
     # doc_list
     if not n:
-        return "You haven't added any documents yet — click **Add document** to upload one."
-    lines = [f"- **{t}**" + (f" ({_label(c)})" if c else "") for t, c in docs[:40]]
+        return "You haven't uploaded any materials yet — add your notes, slides or a textbook chapter."
+    lines = [f"- **{t}**" + (f" ({_label(db, user.id, c)})" if c else "") for t, c in docs[:40]]
     more = f"\n\n…and {n - 40} more." if n > 40 else ""
-    return f"You have **{n}** document{'s' if n != 1 else ''}:\n" + "\n".join(lines) + more
+    return f"You have **{n}** material{'s' if n != 1 else ''}:\n" + "\n".join(lines) + more

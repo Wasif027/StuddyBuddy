@@ -28,6 +28,7 @@ def health() -> HealthResponse:
         llm_provider=settings.llm_provider,
         llm_model=settings.active_model_name,
         llm_active=settings.llm_active,
+        vision_enabled=settings.vision_enabled and settings.llm_active,
         embedding_provider=settings.embedding_provider,
         embedding_dim=settings.embedding_dim,
     )
