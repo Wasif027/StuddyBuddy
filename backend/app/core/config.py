@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     default_explain_level: Literal["simple", "standard", "deep", "exam"] = "standard"
     # Study levels the tutor calibrates to (year 8 → undergraduate).
     default_study_level: str = "high-school"
+    # After each turn, refresh the chat's structured "working memory" with one
+    # extra small model call. Off = half the token spend, no self-correction.
+    context_memory_enabled: bool = True
 
     # -------------------------------------------------------------- assessment
     # A generated practice set is always this shape: easy / medium / hard / brutal.

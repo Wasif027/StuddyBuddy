@@ -403,7 +403,7 @@ def _assemble(
         )
     )
     conv.updated_at = datetime.now(UTC)
-    if plan.mode != "meta":
+    if plan.mode != "meta" and settings.context_memory_enabled and answer_text:
         try:
             conv.context_json = llm.update_conversation_context(
                 conv.context_json or {}, request.question, answer_text, passages
