@@ -134,7 +134,8 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------ observability
     otlp_endpoint: str | None = None
-    otel_console_export: bool = True
+    # Dumps every span to stdout — useful only when debugging tracing itself.
+    otel_console_export: bool = False
     log_level: str = "INFO"
     log_json: bool = False
 
