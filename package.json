@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -k -n api,web -c yellow,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "cd backend && python -m uvicorn app.main:app --reload --port 8000",
-    "dev:web": "cd frontend && next dev -p 3000",
+    "dev:web": "npm --prefix frontend run dev",
     "setup": "npm --prefix frontend ci && pip install -r backend/requirements.txt",
     "test": "npm --prefix frontend run typecheck && cd backend && python -m pytest",
     "lint": "npm --prefix frontend run lint && cd backend && ruff check app tests"

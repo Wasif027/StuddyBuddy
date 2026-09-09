@@ -132,12 +132,14 @@ def _ensure_columns() -> None:
         "CREATE INDEX IF NOT EXISTS ix_chunks_document_id ON chunks (document_id)",
         "CREATE INDEX IF NOT EXISTS ix_documents_conversation_id ON documents (conversation_id)",
     )
-    with engine.begin() as conn:
-        for stmt in stmts:
-            try:
+    # One transaction per statement — a no-op / failure on one must not poison
+    # the rest (Postgres aborts the whole transaction on any error).
+    for stmt in stmts:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(stmt))
-            except Exception as exc:  # pragma: no cover - table may not exist yet
-                logger.warning("ensure_columns skipped (%s): %s", stmt.split()[2], exc)
+        except Exception as exc:  # pragma: no cover - table may not exist yet
+            logger.warning("ensure_columns skipped (%s): %s", stmt.split()[2], exc)
 
 
 def init_db() -> None:

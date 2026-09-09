@@ -2,9 +2,9 @@
   "name": "studybuddy-frontend",
   "version": "1.0.0",
   "private": true,
-  "description": "Frontend for the StudyBuddy — hybrid RAG with citations, confidence and controlled actions.",
+  "description": "Frontend for StudyBuddy — an adaptive AI study tutor.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
