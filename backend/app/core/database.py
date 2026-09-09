@@ -104,26 +104,45 @@ def db_session() -> Generator[Session, None, None]:
         db.close()
 
 
-def _ensure_extensions() -> None:
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+def _direct_url() -> str:
+    """A schema-work URL: bypass Neon's transaction pooler (DDL / CREATE EXTENSION
+    / reflection are unreliable through PgBouncer) and drop channel_binding, which
+    only the pooler advertises."""
+    url = settings.database_url
+    url = url.replace("-pooler.", ".")
+    for param in ("channel_binding=require", "channel_binding=prefer"):
+        url = url.replace(f"&{param}", "").replace(f"?{param}&", "?").replace(f"?{param}", "")
+    return url
 
 
-def _drop_legacy() -> None:
-    """Drop tables from the Groundwork lineage this app no longer defines
-    (spreadsheet analytics + next-step suggestions). Safe on a fresh DB.
-    """
-    with engine.begin() as conn:
-        for tbl in ("suggestions", "actions", "document_tables"):
-            conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+@contextmanager
+def _ddl_engine() -> Generator[Engine, None, None]:
+    """A short-lived, unpooled engine for schema management. Every statement gets
+    a fresh backend connection so extension creation and table creation can't
+    trip over pooler transaction semantics."""
+    ddl = create_engine(_direct_url(), poolclass=NullPool, connect_args=_connect_args, future=True)
+    try:
+        yield ddl
+    finally:
+        ddl.dispose()
 
 
-def _ensure_columns() -> None:
+def _ensure_extensions(conn) -> None:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+
+
+def _drop_legacy(conn) -> None:
+    """Drop tables from the Groundwork lineage this app no longer defines. Safe on a fresh DB."""
+    for tbl in ("suggestions", "actions", "document_tables"):
+        conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+
+
+def _ensure_columns(ddl: Engine) -> None:
     """Additive schema tweaks that ``create_all`` can't apply to existing tables.
 
-    This project has no Alembic; each statement is idempotent so it's safe to run
-    on every ``init``. Keep it small — real migrations belong in a migration tool.
+    No Alembic; each statement is idempotent, so it's safe to run on every ``init``.
+    One transaction per statement — a no-op on one must not poison the rest.
     """
     stmts = (
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS study_level varchar(32) NOT NULL DEFAULT 'high-school'",
@@ -132,14 +151,20 @@ def _ensure_columns() -> None:
         "CREATE INDEX IF NOT EXISTS ix_chunks_document_id ON chunks (document_id)",
         "CREATE INDEX IF NOT EXISTS ix_documents_conversation_id ON documents (conversation_id)",
     )
-    # One transaction per statement — a no-op / failure on one must not poison
-    # the rest (Postgres aborts the whole transaction on any error).
     for stmt in stmts:
         try:
-            with engine.begin() as conn:
+            with ddl.begin() as conn:
                 conn.execute(text(stmt))
-        except Exception as exc:  # pragma: no cover - table may not exist yet
+        except Exception as exc:  # pragma: no cover
             logger.warning("ensure_columns skipped (%s): %s", stmt.split()[2], exc)
+
+
+def _verify(ddl: Engine) -> None:
+    from sqlalchemy import inspect
+
+    missing = set(Base.metadata.tables) - set(inspect(ddl).get_table_names())
+    if missing:
+        raise RuntimeError(f"schema init did not create: {sorted(missing)}")
 
 
 def init_db() -> None:
@@ -150,10 +175,13 @@ def init_db() -> None:
     """
     from app.models import orm  # noqa: F401  (register mappers)
 
-    _ensure_extensions()
-    _drop_legacy()
-    Base.metadata.create_all(bind=engine)
-    _ensure_columns()
+    with _ddl_engine() as ddl:
+        with ddl.begin() as conn:
+            _ensure_extensions(conn)
+            _drop_legacy(conn)
+        Base.metadata.create_all(bind=ddl)
+        _ensure_columns(ddl)
+        _verify(ddl)
 
 
 def recreate_all() -> None:
@@ -163,9 +191,12 @@ def recreate_all() -> None:
     """
     from app.models import orm  # noqa: F401
 
-    _ensure_extensions()
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    with _ddl_engine() as ddl:
+        with ddl.begin() as conn:
+            _ensure_extensions(conn)
+        Base.metadata.drop_all(bind=ddl)
+        Base.metadata.create_all(bind=ddl)
+        _verify(ddl)
 
 
 def ping() -> bool:
