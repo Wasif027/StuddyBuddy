@@ -286,6 +286,38 @@ def _anthropic(question, passages, system, level, student_level, history, cc) ->
     return _from_payload(data, provider="anthropic", model=settings.anthropic_model, usage=usage)
 
 
+def _reasoning_kwargs(base_url: str | None, *, want_thinking: bool) -> dict:
+    """Provider-specific 'don't (or barely) think' knobs.
+
+    Gemini 2.5+ and some Groq models 'think' before answering — slow, and they
+    can spend the whole token budget on hidden reasoning and return an empty
+    message. For chat / question-gen we turn that off; for the reasoning-heavy
+    paths (the brutal question, grading free text) we allow a little.
+    """
+    if not base_url:
+        return {}
+    if any(p in base_url for p in ("generativelanguage", "google")):
+        return {"reasoning_effort": "low" if want_thinking else "none"}
+    if "groq" in base_url:
+        return {"reasoning_effort": "low"}
+    return {}
+
+
+def _json_content(resp) -> str:
+    """Extract the message content, raising if the model returned nothing
+    (a thinking model that spent its whole budget reasoning)."""
+    msg = resp.choices[0].message
+    raw = (msg.content or "").strip()
+    if not raw:
+        fr = getattr(resp.choices[0], "finish_reason", "?")
+        raise RuntimeError(
+            f"model returned an empty message (finish_reason={fr}) — likely a "
+            "'thinking' model that used its token budget on hidden reasoning. "
+            "Try a non-thinking model (e.g. gemini-2.0-flash) or raise LLM_MAX_TOKENS."
+        )
+    return raw
+
+
 def _openai(question, passages, system, level, student_level, history, cc) -> Synthesis:  # pragma: no cover
     from openai import OpenAI
 
@@ -294,11 +326,8 @@ def _openai(question, passages, system, level, student_level, history, cc) -> Sy
         api_key=settings.openai_api_key or "not-needed",
         base_url=base_url,
         timeout=settings.llm_timeout_seconds,
-        max_retries=2,
+        max_retries=1,
     )
-    extra: dict = {}
-    if base_url and any(p in base_url for p in ("groq", "generativelanguage", "google")):
-        extra["reasoning_effort"] = "low"
     resp = client.chat.completions.create(
         model=settings.openai_model,
         max_tokens=settings.llm_max_tokens,
@@ -310,9 +339,9 @@ def _openai(question, passages, system, level, student_level, history, cc) -> Sy
                 history=history, conversation_context=cc)},
         ],
         response_format={"type": "json_object"},
-        **extra,
+        **_reasoning_kwargs(base_url, want_thinking=False),
     )
-    raw = resp.choices[0].message.content or "{}"
+    raw = _json_content(resp)
     data = json.loads(raw[raw.find("{") : raw.rfind("}") + 1] or "{}")
     usage = {
         "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
@@ -443,11 +472,8 @@ def json_complete(
         api_key=settings.openai_api_key or "not-needed",
         base_url=base_url,
         timeout=settings.llm_timeout_seconds,
-        max_retries=2,
+        max_retries=1,
     )
-    extra: dict = {}
-    if base_url and any(p in base_url for p in ("groq", "generativelanguage", "google")):
-        extra["reasoning_effort"] = "low"
     user_content: object = user
     if images:
         user_content = [{"type": "text", "text": user}] + [
@@ -463,9 +489,9 @@ def json_complete(
             {"role": "user", "content": user_content},
         ],
         response_format={"type": "json_object"},
-        **extra,
+        **_reasoning_kwargs(base_url, want_thinking=hard),
     )
-    raw = resp.choices[0].message.content or "{}"
+    raw = _json_content(resp)
     return json.loads(raw[raw.find("{") : raw.rfind("}") + 1] or "{}")
 
 
