@@ -277,7 +277,7 @@ def _anthropic(question, passages, system, level, student_level, history, cc) ->
         output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
     )
     text = next((b.text for b in resp.content if b.type == "text"), "{}")
-    data = json.loads(text)
+    data = _loads(text)
     usage = {
         "input_tokens": getattr(resp.usage, "input_tokens", 0),
         "output_tokens": getattr(resp.usage, "output_tokens", 0),
@@ -287,17 +287,15 @@ def _anthropic(question, passages, system, level, student_level, history, cc) ->
 
 
 def _reasoning_kwargs(base_url: str | None, *, want_thinking: bool) -> dict:
-    """Provider-specific 'don't (or barely) think' knobs.
+    """Provider-specific reasoning knobs.
 
-    Gemini 2.5+ and some Groq models 'think' before answering — slow, and they
-    can spend the whole token budget on hidden reasoning and return an empty
-    message. For chat / question-gen we turn that off; for the reasoning-heavy
-    paths (the brutal question, grading free text) we allow a little.
+    Gemini's *-flash-lite models are non-thinking and 400 on ``reasoning_effort``;
+    the full flash/pro models think by default. So for Gemini we send nothing and
+    pick the model per path (``HARD_MODEL`` for the reasoning-heavy work). Groq's
+    gpt-oss / qwen models take a hint.
     """
     if not base_url:
         return {}
-    if any(p in base_url for p in ("generativelanguage", "google")):
-        return {"reasoning_effort": "low" if want_thinking else "none"}
     if "groq" in base_url:
         return {"reasoning_effort": "low"}
     return {}
@@ -313,9 +311,27 @@ def _json_content(resp) -> str:
         raise RuntimeError(
             f"model returned an empty message (finish_reason={fr}) — likely a "
             "'thinking' model that used its token budget on hidden reasoning. "
-            "Try a non-thinking model (e.g. gemini-2.0-flash) or raise LLM_MAX_TOKENS."
+            "Try a non-thinking model (e.g. gemini-3.5-flash-lite) or raise LLM_MAX_TOKENS."
         )
     return raw
+
+
+_BAD_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _loads(raw: str) -> dict:
+    """Parse a JSON object out of a model response, tolerating the usual sins:
+    surrounding prose / fences, and invalid backslash escapes (models love to
+    emit ``\\(`` / ``\\,`` from LaTeX-ish content)."""
+    span = raw[raw.find("{") : raw.rfind("}") + 1] or "{}"
+    for candidate in (span, _BAD_ESCAPE_RE.sub(r"\\\\", span)):
+        try:
+            out = json.loads(candidate)
+            return out if isinstance(out, dict) else {}
+        except json.JSONDecodeError:
+            continue
+    logger.warning("json_parse_failed", head=span[:200])
+    return {}
 
 
 def _openai(question, passages, system, level, student_level, history, cc) -> Synthesis:  # pragma: no cover
@@ -341,8 +357,7 @@ def _openai(question, passages, system, level, student_level, history, cc) -> Sy
         response_format={"type": "json_object"},
         **_reasoning_kwargs(base_url, want_thinking=False),
     )
-    raw = _json_content(resp)
-    data = json.loads(raw[raw.find("{") : raw.rfind("}") + 1] or "{}")
+    data = _loads(_json_content(resp))
     usage = {
         "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
         "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
@@ -463,7 +478,7 @@ def json_complete(
             messages=[{"role": "user", "content": content}],
         )
         text = next((b.text for b in resp.content if b.type == "text"), "{}")
-        return json.loads(text[text.find("{") : text.rfind("}") + 1] or "{}")
+        return _loads(text)
 
     from openai import OpenAI
 
@@ -491,8 +506,7 @@ def json_complete(
         response_format={"type": "json_object"},
         **_reasoning_kwargs(base_url, want_thinking=hard),
     )
-    raw = _json_content(resp)
-    return json.loads(raw[raw.find("{") : raw.rfind("}") + 1] or "{}")
+    return _loads(_json_content(resp))
 
 
 # Back-compat alias (older imports).

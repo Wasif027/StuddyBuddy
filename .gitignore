@@ -23,3 +23,4 @@ build/
 backend/_diag.py
 
 backend/_diag_llm.py
+backend/_e2e.py

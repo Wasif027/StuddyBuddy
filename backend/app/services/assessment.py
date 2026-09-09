@@ -383,10 +383,18 @@ def _update_review(db: Session, user: User, question: Question, score: float) ->
     if ri is None:
         if score >= 0.85:
             return  # got it comfortably first time — nothing to review
-        ri = ReviewItem(id=str(uuid.uuid4()), user_id=user.id, question_id=question.id)
+        ri = ReviewItem(
+            id=str(uuid.uuid4()), user_id=user.id, question_id=question.id,
+            easiness=2.5, interval_days=0, repetitions=0,
+        )
         db.add(ri)
-    s = schedule(easiness=ri.easiness, interval_days=ri.interval_days,
-                 repetitions=ri.repetitions, quality=q)
+    # column defaults haven't been flushed onto a brand-new row yet — coalesce.
+    s = schedule(
+        easiness=ri.easiness if ri.easiness is not None else 2.5,
+        interval_days=ri.interval_days or 0,
+        repetitions=ri.repetitions or 0,
+        quality=q,
+    )
     from datetime import UTC, datetime, timedelta
 
     ri.easiness = s.easiness

@@ -16,9 +16,35 @@ _NUM_RE = re.compile(r"^\s*(\d+)\.\s+(.*)$")
 _HR_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
 
+# fpdf2's core fonts are Latin-1 only; transliterate the symbols study content
+# actually uses, then drop anything still out of range.
+_TRANSLIT = {
+    "–": "-", "—": "-", "‑": "-", "‒": "-", "―": "-",
+    "“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'",
+    "…": "...", "•": "-", "·": "*", "∙": "*", "×": "x", "÷": "/",
+    "→": "->", "←": "<-", "↔": "<->", "⇒": "=>", "⇐": "<=", "⟶": "->",
+    "≤": "<=", "≥": ">=", "≠": "!=", "≈": "~", "≡": "==", "∝": "prop to",
+    "∞": "infinity", "√": "sqrt", "∑": "sum", "∏": "product", "∫": "integral",
+    "∂": "d", "∆": "delta", "∇": "nabla", "°": " deg", "′": "'", "″": '"',
+    "±": "+/-", "∴": "therefore", "∵": "because", "∈": "in", "∉": "not in",
+    "⊂": "subset", "⊆": "subset=", "∪": "union", "∩": "intersect", "∅": "empty set",
+    "≅": "~=", "⟨": "<", "⟩": ">", "µ": "u", "π": "pi", "θ": "theta",
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon",
+    "λ": "lambda", "σ": "sigma", "τ": "tau", "φ": "phi", "ω": "omega",
+    "Δ": "Delta", "Σ": "Sigma", "Ω": "Omega", "Φ": "Phi", "Π": "Pi",
+    " ": " ", " ": " ", " ": " ", "​": "",
+}
+_TRANSLIT_RE = re.compile("|".join(map(re.escape, _TRANSLIT)))
+
+
+def _latin1(text: str) -> str:
+    text = _TRANSLIT_RE.sub(lambda m: _TRANSLIT[m.group()], text)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
 
 def _md_inline(text: str) -> str:
     """Normalise Markdown inline syntax to what fpdf2's markdown mode expects."""
+    text = _latin1(text)
     text = text.replace("__", "**")  # fpdf uses __ for underline; treat as bold
     text = re.sub(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)", r"__\1__", text)  # *italic* -> __italic__ (fpdf italic)
     text = text.replace("`", "")
@@ -46,7 +72,7 @@ def markdown_to_pdf(title: str, markdown: str, *, footer: str = "StudyBuddy") ->
 
     # title
     pdf.set_font("Helvetica", style="B", size=18)
-    pdf.multi_cell(epw, 9, title.strip(), new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(epw, 9, _latin1(title.strip()), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
     lines = markdown.replace("\r\n", "\n").split("\n")
@@ -62,7 +88,7 @@ def markdown_to_pdf(title: str, markdown: str, *, footer: str = "StudyBuddy") ->
                 pdf.set_font("Courier", size=9)
                 pdf.set_fill_color(244, 242, 238)
                 for c in code_buf:
-                    pdf.multi_cell(epw, 4.6, c or " ", fill=True, new_x="LMARGIN", new_y="NEXT")
+                    pdf.multi_cell(epw, 4.6, _latin1(c) or " ", fill=True, new_x="LMARGIN", new_y="NEXT")
                 pdf.ln(2)
                 code_buf, in_code = [], False
             else:
@@ -159,7 +185,7 @@ def _render_table(pdf, rows: list[list[str]], epw: float) -> None:
             pdf.set_fill_color(240, 238, 233)
         for ci in range(cols):
             cell = row[ci] if ci < len(row) else ""
-            pdf.cell(w, 7, cell[:60], border=1, fill=(ri == 0))
+            pdf.cell(w, 7, _latin1(cell[:60]), border=1, fill=(ri == 0))
         pdf.ln(7)
     pdf.ln(3)
 

@@ -8,6 +8,7 @@ assistant message → respond.  JSON and SSE variants.
 from __future__ import annotations
 
 import re
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -403,15 +404,46 @@ def _assemble(
         )
     )
     conv.updated_at = datetime.now(UTC)
-    if plan.mode != "meta" and settings.context_memory_enabled and answer_text:
-        try:
-            conv.context_json = llm.update_conversation_context(
-                conv.context_json or {}, request.question, answer_text, passages
-            )
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.warning("context_update_failed", error=str(exc))
     db.commit()
     return response
+
+
+def _refresh_context(
+    conv: Conversation,
+    question: str,
+    answer_text: str,
+    passages: list[llm.ContextPassage],
+    mode: str,
+) -> None:
+    """Update the chat's running working memory in a background thread — it's a
+    second model call and must never add to the user's wait."""
+    if mode == "meta" or not settings.context_memory_enabled or not answer_text or not llm.provider_ready():
+        return
+    conv_id = conv.id
+    prev = dict(conv.context_json or {})
+    passage_lite = [
+        llm.ContextPassage(p.marker, p.chunk_id, p.title, p.heading, p.text[:600], p.score)
+        for p in passages[:4]
+    ]
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+
+        session = SessionLocal()
+        try:
+            updated = llm.update_conversation_context(prev, question, answer_text, passage_lite)
+            c = session.get(Conversation, conv_id)
+            if c is not None:
+                c.context_json = updated
+                c.updated_at = datetime.now(UTC)
+                session.commit()
+        except Exception as exc:  # pragma: no cover - best effort
+            session.rollback()
+            logger.warning("context_update_failed", error=str(exc))
+        finally:
+            session.close()
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # --------------------------------------------------------------------- meta
@@ -545,6 +577,7 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
         response = _assemble(db, user, conv, request, retrieved, synth, passages, latency_ms, plan, level)
         if cacheable and not response.insufficient_evidence:
             cache.set_json(key, response.model_dump(by_alias=True))
+        _refresh_context(conv, request.question, response.answer, passages, plan.mode)
         span.set_attribute("confidence", response.confidence)
         return response
 
@@ -616,6 +649,9 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
     if cacheable and not response.insufficient_evidence and not request.bypass_cache:
         cache.set_json(_cache_key(user, request, level), response.model_dump(by_alias=True))
     yield {"type": "final", "payload": response.model_dump(by_alias=True, mode="json")}
+    # The answer is on the client now — refresh the chat's working memory without
+    # making the user wait for a second model call.
+    _refresh_context(conv, request.question, response.answer, passages, plan.mode)
 
 
 def count_message_count(db: Session, conversation_id: str) -> int:
