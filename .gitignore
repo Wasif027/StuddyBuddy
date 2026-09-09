@@ -21,3 +21,5 @@ build/
 .claude/settings.local.json
 
 backend/_diag.py
+
+backend/_diag_llm.py
