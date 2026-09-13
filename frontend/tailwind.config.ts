@@ -1,9 +1,10 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Design system — warm charcoal surfaces, a single ochre accent, Geist type.
- * Colours resolve from CSS custom properties (globals.css) so the same class
- * names work in light and dark.
+ * Design system — cool slate/indigo surfaces, a single scholarly-blue accent,
+ * Space Grotesk headings over Public Sans body. Colours resolve from CSS
+ * custom properties (globals.css) so the same class names work in light and
+ * dark.
  */
 const config: Config = {
   darkMode: ["class", '[data-theme="dark"]'],
@@ -37,7 +38,8 @@ const config: Config = {
         danger: "rgb(var(--danger) / <alpha-value>)",
       },
       fontFamily: {
-        sans: ["var(--font-geist-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ["var(--font-geist-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       fontSize: {

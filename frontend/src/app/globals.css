@@ -4,49 +4,53 @@
 
 /*
  * ── Design tokens ─────────────────────────────────────────────────────────
- * Warm-tinted charcoal surfaces, one considered accent (amber/ochre — reads as
- * "documents / knowledge / verified"), semantic colours desaturated so nothing
- * screams. Values are space-separated RGB channels for Tailwind <alpha-value>.
+ * Cool slate/indigo surfaces, one accent (a scholarly indigo-blue — reads as
+ * "focus / notebook / verified", not "document" like Groundwork's ochre).
+ * Deliberately a different hue family and a cooler neutral than the other two
+ * portfolio apps, not just a different accent on the same warm base. Semantic
+ * colours desaturated so nothing screams. Values are space-separated RGB
+ * channels for Tailwind <alpha-value>. Contrast checked against WCAG AA
+ * (4.5:1) for muted text and the accent button label in both themes.
  */
 :root {
-  --surface-base: 247 246 243;
-  --surface-raised: 255 255 254;
-  --surface-overlay: 255 255 254;
-  --surface-sunken: 240 238 233;
-  --line: 226 223 214;
-  --line-strong: 205 200 188;
-  --content-primary: 28 26 23;
-  --content-secondary: 82 78 70;
-  --content-muted: 128 122 110;
-  --content-inverted: 250 249 246;
-  --accent: 176 116 40;          /* ochre */
-  --accent-soft: 244 236 222;
-  --accent-contrast: 255 253 249;
-  --positive: 42 122 84;
-  --caution: 179 120 20;
-  --danger: 186 68 55;
-  --shadow: 40 33 22;
+  --surface-base: 248 249 251;
+  --surface-raised: 255 255 255;
+  --surface-overlay: 255 255 255;
+  --surface-sunken: 237 239 243;
+  --line: 221 225 231;
+  --line-strong: 196 202 212;
+  --content-primary: 18 22 30;
+  --content-secondary: 68 76 92;
+  --content-muted: 94 102 117;   /* 5.5:1 on surface-base */
+  --content-inverted: 250 251 252;
+  --accent: 69 99 163;           /* scholarly indigo-blue */
+  --accent-soft: 228 233 244;
+  --accent-contrast: 255 255 255;
+  --positive: 34 128 94;
+  --caution: 173 122 22;
+  --danger: 190 66 66;
+  --shadow: 15 20 30;
   --grain-opacity: 0.035;
 }
 
 :root[data-theme="dark"],
 .dark {
-  --surface-base: 18 17 16;
-  --surface-raised: 25 24 22;
-  --surface-overlay: 31 29 27;
-  --surface-sunken: 21 20 18;
-  --line: 42 40 36;
-  --line-strong: 58 55 49;
-  --content-primary: 237 234 227;
-  --content-secondary: 178 172 160;
-  --content-muted: 129 123 111;
-  --content-inverted: 18 17 16;
-  --accent: 224 168 92;
-  --accent-soft: 44 37 27;
-  --accent-contrast: 22 18 12;
-  --positive: 92 194 142;
-  --caution: 224 170 92;
-  --danger: 232 130 118;
+  --surface-base: 13 15 20;
+  --surface-raised: 19 22 29;
+  --surface-overlay: 24 28 37;
+  --surface-sunken: 16 19 25;
+  --line: 37 42 54;
+  --line-strong: 52 58 73;
+  --content-primary: 231 234 241;
+  --content-secondary: 170 177 191;
+  --content-muted: 134 142 158;  /* 5.8:1 on surface-base */
+  --content-inverted: 13 15 20;
+  --accent: 137 163 232;
+  --accent-soft: 29 37 58;
+  --accent-contrast: 10 14 24;
+  --positive: 101 199 159;
+  --caution: 219 176 102;
+  --danger: 225 121 121;
   --shadow: 0 0 0;
   --grain-opacity: 0.05;
 }
@@ -71,7 +75,7 @@ body {
 body {
   background-color: rgb(var(--surface-base));
   color: rgb(var(--content-primary));
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   font-feature-settings: "cv05", "cv08", "ss03";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -122,6 +126,8 @@ body::before {
 h1,
 h2,
 h3 {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
   letter-spacing: -0.02em;
   text-wrap: balance;
 }
@@ -264,6 +270,24 @@ h3 {
   border: 1px solid rgb(var(--line));
   border-radius: 4px;
   padding: 0.05em 0.35em;
+}
+.prose-answer table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.88em;
+}
+.prose-answer th,
+.prose-answer td {
+  border: 1px solid rgb(var(--line));
+  padding: 0.4rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-answer th {
+  background: rgb(var(--surface-sunken));
+  font-weight: 600;
+  white-space: nowrap;
 }
 .prose-answer ul,
 .prose-answer ol { margin: 0.5rem 0; padding-left: 1.35rem; }
