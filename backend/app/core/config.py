@@ -113,10 +113,20 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     # Optional stronger model for the paths that need real reasoning — generating
     # the "brutal" question, grading nuanced free-text answers, step-by-step
-    # worked solutions. Same endpoint/key as OPENAI_*; only the model name differs.
-    # Falls back to `openai_model` when unset.
+    # worked solutions. May live on a DIFFERENT endpoint (e.g. Groq) — set
+    # HARD_BASE_URL / HARD_API_KEY too; both fall back to OPENAI_* when unset.
+    # `hard_model` unset → the reasoning paths just use `openai_model`.
     hard_model: str | None = None
-    llm_max_tokens: int = 1600
+    hard_base_url: str | None = None
+    hard_api_key: str | None = None
+    # Vision model for image / slide / handwriting understanding. Falls back to
+    # `openai_model` on the OPENAI_* endpoint (Gemini Flash handles this well).
+    vision_model: str | None = None
+    # 1600 was too tight for a "deep" or multi-part chat answer wrapped in the
+    # JSON schema — long answers were getting cut mid-string, which used to lose
+    # the whole response (see llm._repair_json's mid-string recovery for the
+    # cases this still doesn't prevent).
+    llm_max_tokens: int = 2600
     llm_timeout_seconds: float = 60.0
     # Answers the tutor can't ground in the user's materials are flagged rather
     # than presented with false confidence.
@@ -245,6 +255,37 @@ class Settings(BaseSettings):
         if self.llm_provider == "openai" and self.openai_configured:
             return self.hard_model or self.openai_model
         return "offline-extractive"
+
+    def hard_llm(self) -> tuple[str, str | None, str]:
+        """(api_key, base_url, model) for the reasoning-heavy path. Uses the
+        dedicated HARD_* endpoint when a separate one is configured (a user's
+        own key does NOT apply there — it's a different provider), else the
+        OPENAI_* endpoint with `hard_model` (or `openai_model`), where it does."""
+        from app.core.request_context import get_user_llm_key
+
+        if self.hard_model and (self.hard_base_url or self.hard_api_key):
+            return (
+                self.hard_api_key or self.openai_api_key or "not-needed",
+                self.hard_base_url or self.openai_base_url,
+                self.hard_model,
+            )
+        return (
+            get_user_llm_key() or self.openai_api_key or "not-needed",
+            self.openai_base_url,
+            self.hard_model or self.openai_model,
+        )
+
+    def vision_llm(self) -> tuple[str, str | None, str]:
+        """(api_key, base_url, model) for image understanding — the OPENAI_*
+        endpoint (a user's own key applies here too), overriding only the
+        model name when VISION_MODEL is set."""
+        from app.core.request_context import get_user_llm_key
+
+        return (
+            get_user_llm_key() or self.openai_api_key or "not-needed",
+            self.openai_base_url,
+            self.vision_model or self.openai_model,
+        )
 
 
 @lru_cache(maxsize=1)

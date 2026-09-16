@@ -31,7 +31,7 @@ interface StudyState {
   }) => Promise<string | null>;
   gradeAnswer: (
     index: number,
-    body: { answer?: string; optionIndex?: number | null },
+    body: { answer?: string; optionIndex?: number | null; file?: File; note?: string },
   ) => Promise<GradeResponse | null>;
   deletePracticeSet: (id: string) => Promise<void>;
 
@@ -42,6 +42,7 @@ interface StudyState {
   createNote: (b: { title: string; bodyMd?: string; kind?: NoteRead["kind"]; category?: string | null }) => Promise<void>;
   updateNote: (id: string, b: Partial<Pick<NoteRead, "title" | "bodyMd" | "category" | "pinned">>) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
+  uploadIntoNote: (id: string, file: File) => Promise<boolean>;
   quizFromNote: (id: string) => Promise<string | null>;
 
   /* progress */
@@ -105,7 +106,9 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     const set_ = get().activeSet;
     if (!set_) return null;
     try {
-      const res = await api.gradeAnswer(set_.id, index, body);
+      const res = body.file
+        ? await api.gradeAnswerUpload(set_.id, index, body.file, body.note)
+        : await api.gradeAnswer(set_.id, index, body);
       set((s) => ({
         activeSet: s.activeSet
           ? {
@@ -182,6 +185,19 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
     } catch (err) {
       toast.error("Delete failed", err instanceof Error ? err.message : String(err));
+    }
+  },
+
+  async uploadIntoNote(id, file) {
+    try {
+      const note = await api.uploadIntoNote(id, file);
+      set((s) => ({ notes: s.notes.map((n) => (n.id === id ? note : n)) }));
+      useAppStore.getState().refreshMeta();
+      toast.success("Note filled in from your upload");
+      return true;
+    } catch (err) {
+      toast.error("Couldn't read that file", err instanceof Error ? err.message : String(err));
+      return false;
     }
   },
 

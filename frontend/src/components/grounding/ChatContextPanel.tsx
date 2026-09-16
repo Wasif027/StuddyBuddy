@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
+import { MathText } from "@/components/ui/MathText";
 import { Brain, CaretDown, Check, Refresh, Warning } from "@/components/ui/icons";
 
 /** "What this chat knows" — the running working memory the tutor carries. */
@@ -39,7 +40,7 @@ export function ChatContextPanel() {
 
       {open && (
         <div className="space-y-2 px-3 pb-3 text-2xs leading-relaxed">
-          {ctx?.summary && <p className="text-content-secondary">{ctx.summary}</p>}
+          {ctx?.summary && <MathText text={ctx.summary} className="block text-content-secondary" />}
 
           {attached.length > 0 && (
             <p className="text-content-muted">
@@ -57,7 +58,7 @@ export function ChatContextPanel() {
                     <Check className="mt-px h-3 w-3 shrink-0 text-positive" />
                   )}
                   <span>
-                    {e.fact}
+                    <MathText text={e.fact} />
                     {e.source && (
                       <span className="text-content-muted">
                         {" "}
@@ -77,7 +78,8 @@ export function ChatContextPanel() {
                 <p key={i} className="flex gap-1.5 text-content-secondary">
                   <Refresh className="mt-px h-3 w-3 shrink-0 text-accent" />
                   <span>
-                    Corrected: <span className="line-through opacity-60">{c.was}</span> → {c.now}
+                    Corrected: <span className="line-through opacity-60"><MathText text={c.was} /></span> →{" "}
+                    <MathText text={c.now} />
                   </span>
                 </p>
               ))}
@@ -90,7 +92,7 @@ export function ChatContextPanel() {
                 <p key={i} className="flex gap-1.5 text-caution">
                   <Warning className="mt-px h-3 w-3 shrink-0" />
                   <span>
-                    Flagged claim: “{c.claim}” — {c.issue}
+                    Flagged claim: “<MathText text={c.claim} />” — <MathText text={c.issue} />
                   </span>
                 </p>
               ))}

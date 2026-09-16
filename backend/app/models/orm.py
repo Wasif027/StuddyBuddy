@@ -121,6 +121,13 @@ class User(TimestampMixin, Base):
     # e.g. "year-8", "gcse", "a-level", "undergraduate". A per-category override
     # lives on the Category row.
     study_level: Mapped[str] = mapped_column(String(32), default="high-school", nullable=False)
+    # The user's own Gemini API key, encrypted (app.core.crypto) — never sent
+    # back to the client once saved. NULL = use the shared server key.
+    custom_llm_api_key_enc: Mapped[str | None] = mapped_column(Text)
+
+    @property
+    def has_custom_key(self) -> bool:
+        return self.custom_llm_api_key_enc is not None
 
     conversations: Mapped[list[Conversation]] = relationship(
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True
@@ -366,6 +373,10 @@ class Question(Base):
     rubric: Mapped[str] = mapped_column(Text, default="", nullable=False)
     # The sub-skill / subtopic this question tests — used for weak-topic detection.
     skill: Mapped[str | None] = mapped_column(String(160), index=True)
+    # "text" = typed answer only (theory / recall / MCQ). "text_or_upload" = the
+    # student may type OR upload a photo / PDF of their working (derivations,
+    # proofs, multi-step calculations, sketches).
+    answer_mode: Mapped[str] = mapped_column(String(16), default="text", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -393,6 +404,10 @@ class Attempt(TimestampMixin, Base):
     correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 0..1
     feedback: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Set when the student uploaded a photo / PDF of their working. `transcription`
+    # is what the vision model read from it — shown so they can check the reading.
+    answer_image_path: Mapped[str | None] = mapped_column(String(512))
+    transcription: Mapped[str | None] = mapped_column(Text)
     # snapshot
     tier: Mapped[str] = mapped_column(String(16), default="medium", nullable=False)
     topic: Mapped[str] = mapped_column(String(300), default="", nullable=False)

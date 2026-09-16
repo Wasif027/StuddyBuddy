@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { PracticeSetSummary, QuestionRead } from "@/lib/types";
 import { cn, downloadBlob, formatRelativeTime } from "@/lib/utils";
+import { MathText } from "@/components/ui/MathText";
 import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -16,6 +17,7 @@ import {
   Exam,
   Spinner,
   Trash,
+  UploadSimple,
   XCircle,
 } from "@/components/ui/icons";
 
@@ -121,7 +123,7 @@ function GenerateForm() {
           <select value={documentId} onChange={(e) => setDocumentId(e.target.value)} className="input">
             <option value="">— none —</option>
             {documents
-              .filter((d) => d.status === "ready")
+              .filter((d) => d.status === "ready" && d.imageKind !== "timetable")
               .map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.title}
@@ -176,7 +178,7 @@ function SetRow({
   return (
     <div className="group flex items-center gap-3 rounded-lg border border-line bg-surface-raised p-3.5 transition-colors hover:border-accent/40">
       <button onClick={onOpen} className="min-w-0 flex-1 text-left">
-        <p className="truncate text-sm font-medium text-content-primary">{set.topic}</p>
+        <p className="truncate text-sm font-medium text-content-primary"><MathText text={set.topic} /></p>
         <p className="mt-0.5 text-2xs text-content-muted">
           {set.studyLevel} · {set.questionCount} questions ·{" "}
           {set.answered ? `${set.answered}/${set.questionCount} done · ${pct}% right` : "not started"}{" "}
@@ -209,14 +211,14 @@ function PracticeRunner() {
     <>
       <div className="mb-5">
         <div className="flex items-start justify-between gap-3">
-          <h2 className="text-lg font-semibold tracking-tight text-content-primary">{set.topic}</h2>
+          <h2 className="text-lg font-semibold tracking-tight text-content-primary"><MathText text={set.topic} /></h2>
           <button onClick={downloadPdf} className="btn btn-ghost h-7 shrink-0 px-2 text-2xs text-content-muted">
             Download PDF
           </button>
         </div>
         <p className="mt-1 text-2xs text-content-muted">
           {set.studyLevel} · {set.answered}/{set.questions.length} answered ·{" "}
-          {set.answered ? Math.round((set.correct / set.answered) * 100) : 0}% right · {set.model}
+          {set.answered ? Math.round((set.correct / set.answered) * 100) : 0}% right
         </p>
         <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-sunken">
           <div
@@ -238,18 +240,21 @@ function QuestionCard({ q }: { q: QuestionRead }) {
   const grade = useStudyStore((s) => s.gradeAnswer);
   const [answer, setAnswer] = useState("");
   const [optionIndex, setOptionIndex] = useState<number | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const done = !!q.attempt;
   const tier = TIER_META[q.tier] ?? TIER_META.medium;
 
   const isChoice = q.qtype === "mcq" || q.qtype === "true_false";
+  const canUpload = q.answerMode === "text_or_upload" && !isChoice;
 
   const submit = async () => {
     if (busy || done) return;
     if (isChoice && optionIndex === null) return;
-    if (!isChoice && !answer.trim()) return;
+    if (!isChoice && !answer.trim() && !file) return;
     setBusy(true);
-    await grade(q.index, isChoice ? { optionIndex } : { answer });
+    if (file) await grade(q.index, { file, note: answer.trim() || undefined });
+    else await grade(q.index, isChoice ? { optionIndex } : { answer });
     setBusy(false);
   };
 
@@ -271,7 +276,7 @@ function QuestionCard({ q }: { q: QuestionRead }) {
       </div>
 
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-content-primary">
-        {q.index + 1}. {q.prompt}
+        {q.index + 1}. <MathText text={q.prompt} />
       </p>
 
       {isChoice ? (
@@ -296,39 +301,83 @@ function QuestionCard({ q }: { q: QuestionRead }) {
                 )}
               >
                 <span className="font-mono text-2xs text-content-muted">{String.fromCharCode(65 + i)}</span>
-                {opt}
+                <MathText text={opt} />
               </button>
             );
           })}
         </div>
       ) : (
-        <textarea
-          value={done ? q.attempt!.userAnswer : answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          disabled={done}
-          rows={q.qtype === "explain" ? 4 : 2}
-          placeholder={q.qtype === "numeric" ? "Your answer (with units)" : "Your answer"}
-          className="input mt-3 text-sm disabled:opacity-70"
-        />
+        <>
+          <textarea
+            value={done ? q.attempt!.userAnswer : answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            disabled={done || !!file}
+            rows={q.qtype === "explain" ? 4 : 2}
+            placeholder={
+              canUpload
+                ? "Type your answer — or upload a photo of your working below"
+                : q.qtype === "numeric"
+                  ? "Your answer (with units)"
+                  : "Your answer"
+            }
+            className="input mt-3 text-sm disabled:opacity-70"
+          />
+          {canUpload && !done && (
+            <div className="mt-2 flex items-center gap-2 text-2xs">
+              {file ? (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded bg-surface-sunken px-2 py-1 text-content-secondary">
+                    <UploadSimple className="h-3.5 w-3.5" /> {file.name}
+                  </span>
+                  <button onClick={() => setFile(null)} className="text-content-muted hover:text-danger">
+                    remove
+                  </button>
+                </>
+              ) : (
+                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-dashed border-line px-2.5 py-1 text-content-muted transition-colors hover:border-accent/50 hover:text-content-secondary">
+                  <UploadSimple className="h-3.5 w-3.5" />
+                  Upload photo / PDF of your working
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {done ? (
         <div className="mt-3 space-y-2 border-t border-line pt-3 text-xs">
-          <p className="leading-relaxed text-content-secondary">{q.attempt!.feedback}</p>
+          <p className="leading-relaxed text-content-secondary">
+            <MathText text={q.attempt!.feedback} />
+          </p>
+          {q.attempt!.transcription && (
+            <details className="text-content-muted">
+              <summary className="cursor-pointer text-content-secondary">What I read from your upload</summary>
+              <p className="mt-1 whitespace-pre-wrap rounded bg-surface-sunken p-2 leading-relaxed">
+                <MathText text={q.attempt!.transcription} />
+              </p>
+            </details>
+          )}
           {q.answer && (
             <p className="text-content-muted">
-              <span className="font-medium text-content-secondary">Answer:</span> {q.answer}
+              <span className="font-medium text-content-secondary">Answer:</span>{" "}
+              <MathText text={q.answer} />
             </p>
           )}
         </div>
       ) : (
         <button
           onClick={submit}
-          disabled={busy || (isChoice ? optionIndex === null : !answer.trim())}
+          disabled={busy || (isChoice ? optionIndex === null : !answer.trim() && !file)}
           className="btn btn-accent mt-3 h-8 px-4 text-xs"
         >
           {busy && <Spinner className="h-3.5 w-3.5 animate-spin" />}
-          Check answer
+          {busy && file ? "Reading your working…" : "Check answer"}
         </button>
       )}
     </div>

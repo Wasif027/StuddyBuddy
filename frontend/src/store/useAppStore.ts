@@ -42,6 +42,7 @@ interface AppState {
   streaming: boolean;
   activeAnswer: AnswerResponse | null;
   streamingChunks: SourceChunk[];
+  groundingDone: boolean;
   highlightedChunkId: string | null;
   highlightedMessageId: string | null;
   activeContext: ChatContext | null;
@@ -110,6 +111,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streaming: false,
   activeAnswer: null,
   streamingChunks: [],
+  groundingDone: false,
   highlightedChunkId: null,
   highlightedMessageId: null,
   activeContext: null,
@@ -178,6 +180,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         activeAnswer,
         streamingChunks: [],
+        groundingDone: false,
         highlightedChunkId: null,
         highlightedMessageId: targeted ? targeted.id : null,
         activeContext: detail.context,
@@ -197,6 +200,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       activeAnswer: null,
       streamingChunks: [],
+      groundingDone: false,
       highlightedChunkId: null,
       highlightedMessageId: null,
       activeContext: null,
@@ -265,6 +269,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       streaming: true,
       activeAnswer: null,
       streamingChunks: [],
+      groundingDone: false,
       highlightedChunkId: null,
       highlightedMessageId: null,
       _abort: controller,
@@ -288,7 +293,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const cid = event.payload.conversationId;
             if (cid && get().activeId !== cid) set({ activeId: cid });
           } else if (event.type === "grounding") {
-            set({ streamingChunks: event.payload.sourceChunks });
+            set({ streamingChunks: event.payload.sourceChunks, groundingDone: true });
           } else if (event.type === "token") {
             set((s) => ({
               messages: patch(s.messages, assistantId, {

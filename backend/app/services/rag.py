@@ -42,6 +42,29 @@ _tracer = tracer(__name__)
 
 _LEVELS = ("simple", "standard", "deep", "exam")
 
+_GAVE_UP_PREFIXES = (
+    "i could not", "i couldn't", "i don't", "i do not", "i cannot", "i can't",
+    "there is no", "no information",
+)
+
+
+def _gave_up(answer_text: str) -> bool:
+    """True if the model refused / produced nothing usable."""
+    low = (answer_text or "").strip().lower()
+    return (not low) or low.startswith(_GAVE_UP_PREFIXES)
+
+
+def _synthesize(question: str, passages: list, **kwargs) -> llm.Synthesis:
+    """llm.synthesize with one automatic retry when a pure general-knowledge
+    call (no passages) comes back empty/refusing — a weak model occasionally
+    ignores the "don't refuse" instruction on a long or multi-part question."""
+    synth = llm.synthesize(question, passages, **kwargs)
+    if not passages and _gave_up(synth.answer):
+        retry = llm.synthesize(question, passages, **kwargs)
+        if not _gave_up(retry.answer):
+            return retry
+    return synth
+
 
 # --------------------------------------------------------------------- scoring
 def _confidence(
@@ -359,15 +382,23 @@ def _assemble(
     # "insufficient" = the tutor neither grounded the answer nor gave a confident
     # general-knowledge one.
     insufficient = not grounded and label == "insufficient"
-    if insufficient:
-        low = answer_text.lower()
-        gave_up = (not answer_text) or low.startswith(
-            ("i could not", "i couldn't", "i don't", "i do not", "i cannot", "i can't",
-             "there is no", "no information")
-        )
+    gave_up = _gave_up(answer_text)
+    if insufficient and gave_up and retrieved:
+        # Retrieval ran but came back too thin AND the model wouldn't answer from
+        # general knowledge — point the student at what they could add.
+        answer_text = _insufficient_message(db, user, request.question)
+        citations = []
+    elif not retrieved:
+        # Pure general-knowledge answer (nothing in the library to search). A
+        # low-confidence explanation is still a real answer, not an error state.
+        insufficient = False
         if gave_up:
-            answer_text = _insufficient_message(db, user, request.question)
-            citations = []
+            # The caller already retried the model once (see _synthesize) — this
+            # is a second miss, so be honest rather than promising a retry will help.
+            answer_text = (
+                "I couldn't put together a solid explanation for that just now. "
+                "Try rephrasing the question, or narrow it to one part at a time."
+            )
 
     db.add(
         Answer(
@@ -391,6 +422,7 @@ def _assemble(
         retrieval_mode=plan.mode, retrieval_note=plan.reason,
         explain_level=level,  # type: ignore[arg-type]
         citations=citations, source_chunks=source_chunks, follow_ups=synth.follow_ups,
+        chart=None if insufficient else synth.chart,
         model=synth.model, provider=synth.provider, latency_ms=round(latency_ms, 2),
         usage=TokenUsage(**{k: synth.usage.get(k, 0) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}),
         cached=False, created_at=datetime.now(UTC),
@@ -567,7 +599,7 @@ def generate_answer(db: Session, user: User, request: QueryRequest) -> AnswerRes
         plan = _plan(db, user, request, rq)
         retrieved = _retrieve(db, user, request, plan, rq, conversation_id=conv.id)
         passages = _passages(retrieved)
-        synth = llm.synthesize(
+        synth = _synthesize(
             request.question, passages,
             compare=bool(request.compare_document_ids), mode=plan.mode,
             level=level, student_level=student, history=_history_block(history),
@@ -629,7 +661,7 @@ async def stream_answer(db: Session, user: User, request: QueryRequest) -> Async
         },
     }
 
-    synth = llm.synthesize(
+    synth = _synthesize(
         request.question, passages,
         compare=bool(request.compare_document_ids), mode=plan.mode,
         level=level, student_level=student, history=_history_block(history),

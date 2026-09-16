@@ -148,6 +148,10 @@ def _ensure_columns(ddl: Engine) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS study_level varchar(32) NOT NULL DEFAULT 'high-school'",
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS context_json jsonb NOT NULL DEFAULT '{}'::jsonb",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS conversation_id varchar(36)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_llm_api_key_enc text",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS answer_mode varchar(16) NOT NULL DEFAULT 'text'",
+        "ALTER TABLE attempts ADD COLUMN IF NOT EXISTS answer_image_path varchar(512)",
+        "ALTER TABLE attempts ADD COLUMN IF NOT EXISTS transcription text",
         "CREATE INDEX IF NOT EXISTS ix_chunks_document_id ON chunks (document_id)",
         "CREATE INDEX IF NOT EXISTS ix_documents_conversation_id ON documents (conversation_id)",
     )

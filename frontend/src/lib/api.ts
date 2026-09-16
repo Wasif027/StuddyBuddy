@@ -63,7 +63,8 @@ async function request<T>(path: string, init?: RequestInit, _retry = true): Prom
     await sleep(900);
     return request<T>(path, init, false);
   }
-  if (res.status === 401) {
+  const isAuthAttempt = path === "/auth/login" || path === "/auth/register";
+  if (res.status === 401 && !isAuthAttempt) {
     handleUnauthorized();
     throw new ApiError("Session expired — please sign in again", 401);
   }
@@ -98,6 +99,8 @@ export const api = {
   me: () => request<User>("/auth/me"),
   updateMe: (b: { displayName?: string; studyLevel?: string }) =>
     request<User>("/auth/me", json(b, "PATCH")),
+  setApiKey: (apiKey: string | null) =>
+    request<User>("/auth/api-key", { ...json({ apiKey }), method: "PUT" }),
 
   /* ---- meta ---- */
   health: () => request<HealthResponse>("/health"),
@@ -183,6 +186,15 @@ export const api = {
   }) => request<PracticeSetRead>("/practice", json(b)),
   gradeAnswer: (setId: string, index: number, b: { answer?: string; optionIndex?: number | null }) =>
     request<GradeResponse>(`/practice/${setId}/questions/${index}/grade`, json(b)),
+  gradeAnswerUpload: (setId: string, index: number, file: File, note?: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (note) fd.append("note", note);
+    return request<GradeResponse>(`/practice/${setId}/questions/${index}/grade-upload`, {
+      method: "POST",
+      body: fd,
+    });
+  },
   deletePracticeSet: (id: string) => request<void>(`/practice/${id}`, { method: "DELETE" }),
 
   /* ---- notes ---- */
@@ -199,6 +211,11 @@ export const api = {
   updateNote: (id: string, b: { title?: string; bodyMd?: string; category?: string | null; pinned?: boolean }) =>
     request<NoteRead>(`/notes/${id}`, json(b, "PATCH")),
   deleteNote: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
+  uploadIntoNote: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<NoteRead>(`/notes/${id}/upload`, { method: "POST", body: fd });
+  },
   saveFromChat: (b: { messageId: string; title?: string; category?: string | null }) =>
     request<NoteRead>("/notes/from-chat", json(b)),
   quizFromNote: (id: string) => request<PracticeSetRead>(`/notes/${id}/quiz`, json({})),

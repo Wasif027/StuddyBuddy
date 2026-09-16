@@ -30,6 +30,7 @@ numpy>=1.26
 
 # --- Study-material parsing -------------------------------------------------
 pypdf>=4.2
+pypdfium2>=4.30        # rasterise scanned/handwritten PDF answers for the vision model
 python-docx>=1.1       # .docx notes
 python-pptx>=1.0       # .pptx decks
 pillow>=10.3           # image normalisation for vision ingest

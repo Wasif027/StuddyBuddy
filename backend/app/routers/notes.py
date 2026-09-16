@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.orm import Message, Note, NoteKind, PracticeSet, User
@@ -20,9 +21,18 @@ from app.models.schemas import (
     SaveFromChatRequest,
 )
 from app.services.assessment import generate_practice_set
-from app.services.catalog import ensure_category
+from app.services.catalog import ensure_category, list_labels, match_or_create_category
+from app.services.ingestion import (
+    IMAGE_UPLOAD_TYPES,
+    SUPPORTED_UPLOAD_TYPES,
+    ParseError,
+    UnsupportedFileType,
+    ingest_content,
+    parse_upload,
+)
 
 router = APIRouter(prefix="/notes", tags=["notes"])
+settings = get_settings()
 
 
 def _read(n: Note) -> NoteRead:
@@ -72,6 +82,87 @@ def create_note(
         structured_json=body.structured or {}, source="manual", source_ref=body.source_ref,
     )
     db.add(n)
+    db.commit()
+    db.refresh(n)
+    return _read(n)
+
+
+@router.post("/{note_id}/upload", response_model=NoteRead)
+async def upload_into_note(
+    note_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> NoteRead:
+    """Fill a note's body from an uploaded file (PDF/DOCX/PPTX or photo). The
+    file is also ingested as a regular Document so it's searchable and shows
+    up in Materials, and the note is linked to it via source_ref."""
+    n = _owned(db, user, note_id)
+    raw = await file.read()
+    if len(raw) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file exceeds {settings.max_upload_bytes // (1024 * 1024)}MB limit",
+        )
+    name = file.filename or "upload"
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+
+    if ext in IMAGE_UPLOAD_TYPES:
+        from app.services.vision import describe_image
+
+        try:
+            result = describe_image(
+                raw, name,
+                existing_subjects=list_labels(db, user) if not n.category else None,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        text = result.markdown or result.embed_text
+        category = n.category
+        if not category and result.subject:
+            category = match_or_create_category(db, user, result.subject)
+        doc, _, _ = ingest_content(
+            db, user_id=user.id, title=n.title, content=result.embed_text,
+            category=category, source_type="image",
+            metadata={"filename": name, "content_type": file.content_type, "kind": "image"},
+        )
+        if category and not n.category:
+            n.category = category
+    else:
+        try:
+            parsed = parse_upload(name, raw)
+        except UnsupportedFileType as exc:
+            raise HTTPException(
+                status_code=415, detail=f"{exc} — supported: {sorted(SUPPORTED_UPLOAD_TYPES)}"
+            ) from exc
+        except ParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not parsed.text.strip():
+            raise HTTPException(status_code=422, detail="no readable content in this file")
+        text = parsed.text
+        category = n.category
+        if not category:
+            from app.services.llm import classify_document_subject
+
+            guessed = classify_document_subject(
+                n.title, parsed.text, existing_subjects=list_labels(db, user)
+            )
+            if guessed:
+                category = match_or_create_category(db, user, guessed)
+        doc, _, _ = ingest_content(
+            db, user_id=user.id, title=n.title, content=parsed.text,
+            category=category, source_type=parsed.kind,
+            metadata={"filename": name, "content_type": file.content_type},
+            slides=parsed.slides,
+        )
+        if category and not n.category:
+            n.category = category
+
+    n.body_md = text
+    n.source = "upload"
+    n.source_ref = doc.id
     db.commit()
     db.refresh(n)
     return _read(n)
@@ -140,7 +231,17 @@ def quiz_from_note(
     from app.routers.practice import _set_read
 
     n = _owned(db, user, note_id)
-    topic = f"{n.title}\n\n{n.body_md}".strip()[:4000]
-    ps = generate_practice_set(db, user, topic=topic, category=n.category)
+    # Keep the display topic short and clean (the note's own title) — the
+    # body is real material to quiz on, so it goes in as context directly
+    # rather than being smushed into "topic" (which used to make the topic
+    # a multi-paragraph wall of raw markdown/LaTeX shown as a heading).
+    if n.source == "upload" and n.source_ref:
+        ps = generate_practice_set(
+            db, user, topic=n.title, document_id=n.source_ref, category=n.category,
+        )
+    else:
+        ps = generate_practice_set(
+            db, user, topic=n.title, category=n.category, note_context=n.body_md[:9000] or None,
+        )
     ps = db.get(PracticeSet, ps.id)
     return _set_read(db, user.id, ps)

@@ -70,7 +70,74 @@ def _data_uri(data: bytes) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
-def describe_image(data: bytes, filename: str = "image", *, hint: str | None = None) -> VisionResult:
+_TRANSCRIBE_SYSTEM = (
+    "A student photographed or scanned their handwritten answer to the question below. "
+    "Read it carefully — handwriting varies a lot. Produce a faithful transcription of "
+    "everything they wrote: their working, every line of algebra (as LaTeX), any diagram "
+    "described in words, their final answer. Do not solve it yourself, do not correct their "
+    "mistakes, do not add steps they didn't write. If part is genuinely illegible, write "
+    "[illegible] there.\n"
+    'Return ONLY JSON: {"transcription": string, "legible": boolean, "notes": string} — '
+    "notes = anything the marker should know (e.g. \"last line cut off\", \"diagram unclear\")."
+)
+
+
+def _pdf_to_images(data: bytes, max_pages: int = 5) -> list[bytes]:
+    """Rasterise the first pages of a PDF to PNG bytes (handwritten answers are
+    usually scans, so there's no text layer to extract)."""
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("PDF answers need pypdfium2 installed") from exc
+    pdf = pdfium.PdfDocument(data)
+    out: list[bytes] = []
+    try:
+        for i in range(min(len(pdf), max_pages)):
+            bitmap = pdf[i].render(scale=200 / 72)  # ~200 dpi
+            buf = io.BytesIO()
+            bitmap.to_pil().save(buf, format="PNG")
+            out.append(buf.getvalue())
+    finally:
+        pdf.close()
+    return out
+
+
+def transcribe_work(data: bytes, filename: str, question: str) -> tuple[str, str]:
+    """Read a photo / PDF of a student's handwritten answer. Returns
+    (transcription, notes). Raises if vision isn't configured or the file is unreadable."""
+    if not (settings.vision_enabled and llm.provider_ready()):
+        raise RuntimeError("reading a photo answer needs a vision-capable model configured")
+
+    is_pdf = filename.lower().endswith(".pdf") or data[:5] == b"%PDF-"
+    pages = _pdf_to_images(data) if is_pdf else [data]
+    if not pages:
+        raise ValueError("couldn't read any pages from that file")
+    uris = []
+    for p in pages[:5]:
+        try:
+            uris.append(_data_uri(p))
+        except Exception:  # skip an unreadable page
+            continue
+    if not uris:
+        raise ValueError("couldn't read this file as an image")
+
+    user = f"Question: {question}\n\n(Answer image{'s' if len(uris) > 1 else ''} attached.)"
+    try:
+        out = llm.json_complete(_TRANSCRIBE_SYSTEM, user, max_tokens=2000, images=uris)
+    except Exception as exc:
+        raise RuntimeError(
+            "the vision model is briefly unavailable (rate limit or network issue) — "
+            "try uploading your working again in a moment"
+        ) from exc
+    text = str(out.get("transcription", "")).strip()
+    notes = str(out.get("notes", "")).strip()
+    return text, notes
+
+
+def describe_image(
+    data: bytes, filename: str = "image", *, hint: str | None = None,
+    existing_subjects: list[str] | None = None,
+) -> VisionResult:
     if not (settings.vision_enabled and llm.provider_ready()):
         raise RuntimeError(
             "image understanding needs a vision-capable model — set OPENAI_* (Gemini) "
@@ -82,7 +149,22 @@ def describe_image(data: bytes, filename: str = "image", *, hint: str | None = N
         raise ValueError("couldn't read this image file") from exc
 
     user = f"Filename: {filename}." + (f" The student says: {hint}" if hint else "")
-    data_out = llm.json_complete(_SYSTEM, user, max_tokens=2600, images=[uri])
+    if existing_subjects:
+        user += (
+            f" The student's existing subjects: {', '.join(existing_subjects)}. "
+            "If this matches one, use that exact name for 'subject' rather than coining a new one."
+        )
+    try:
+        data_out = llm.json_complete(_SYSTEM, user, max_tokens=2600, images=[uri])
+    except Exception as exc:
+        # A transient provider failure (rate limit, timeout, network) must
+        # degrade like the chat path does, not crash the upload with a raw 500.
+        raise RuntimeError(
+            "the vision model is briefly unavailable (rate limit or network issue) — "
+            "try uploading this image again in a moment"
+        ) from exc
+    if not data_out:
+        raise RuntimeError("the vision model didn't return a usable description of this image — try again")
     kind = str(data_out.get("kind", "other")).lower().strip()
     if kind not in ("diagram", "problem", "notes", "timetable", "other"):
         kind = "other"

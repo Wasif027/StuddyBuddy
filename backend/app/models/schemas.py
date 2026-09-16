@@ -37,6 +37,24 @@ class Citation(APIModel):
     score: float = Field(..., ge=0.0, le=1.0)
 
 
+class ChartPoint(APIModel):
+    x: float
+    y: float
+
+
+class ChartSeries(APIModel):
+    name: str = ""
+    points: list[ChartPoint] = Field(default_factory=list)
+
+
+class ChartSpec(APIModel):
+    type: Literal["line", "bar", "scatter"] = "line"
+    title: str = ""
+    x_label: str = ""
+    y_label: str = ""
+    series: list[ChartSeries] = Field(default_factory=list)
+
+
 class SourceChunk(APIModel):
     chunk_id: str
     document_id: str
@@ -80,6 +98,7 @@ class AnswerResponse(APIModel):
     citations: list[Citation] = Field(default_factory=list)
     source_chunks: list[SourceChunk] = Field(default_factory=list)
     follow_ups: list[str] = Field(default_factory=list)
+    chart: ChartSpec | None = None
     model: str
     provider: str = "offline"
     latency_ms: float = 0.0
@@ -131,12 +150,18 @@ class UserRead(APIModel):
     username: str
     display_name: str | None = None
     study_level: str = "high-school"
+    has_custom_key: bool = False
     created_at: datetime
 
 
 class UserUpdate(APIModel):
     display_name: str | None = Field(default=None, max_length=120)
     study_level: str | None = Field(default=None, max_length=32)
+
+
+class SetApiKeyRequest(APIModel):
+    # Empty/whitespace clears the key and reverts to the shared one.
+    api_key: str | None = Field(default=None, max_length=400)
 
 
 class AuthResponse(APIModel):
@@ -264,6 +289,7 @@ class DocumentRead(APIModel):
     chunk_count: int = 0
     slide_count: int = 0
     char_count: int = 0
+    image_kind: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -321,6 +347,8 @@ class QuestionRead(APIModel):
     prompt: str
     options: list[str] = Field(default_factory=list)
     skill: str | None = None
+    # "text" or "text_or_upload" — whether a photo/PDF of working is accepted.
+    answer_mode: str = "text"
     # answer + rubric are withheld until the question has been attempted
     answer: str | None = None
     rubric: str | None = None
@@ -369,6 +397,8 @@ class AttemptRead(APIModel):
     score: float = 0.0
     feedback: str = ""
     tier: str = "medium"
+    # set when the answer was a photo/PDF of working — what the vision model read
+    transcription: str | None = None
     created_at: datetime | None = None
 
 
@@ -424,42 +454,38 @@ class ExportRequest(APIModel):
 
 
 # ------------------------------------------------------------- progress
-class TrendPoint(APIModel):
-    date: str
-    attempts: int = 0
-    accuracy: float = 0.0
+class SetTrendPoint(APIModel):
+    """One practice set's result, in chronological order. Unanswered questions
+    count as incorrect — an untouched set is a real 0/N data point, not a gap."""
 
-
-class SkillStat(APIModel):
-    skill: str
-    category: str | None = None
-    attempts: int = 0
+    set_id: str
+    created_at: str
+    correct: int = 0
+    total: int = 0
     accuracy: float = 0.0
 
 
 class CategoryProgress(APIModel):
     category: str
     label: str
-    attempts: int = 0
-    accuracy: float = 0.0
+    total_sets: int = 0
+    solved_sets: int = 0
     doc_count: int = 0
-    readiness: float = 0.0
+    by_tier: dict[str, float] = Field(default_factory=dict)
+    trend: list[SetTrendPoint] = Field(default_factory=list)
 
 
 class ProgressResponse(APIModel):
-    total_attempts: int = 0
-    overall_accuracy: float = 0.0
+    total_questions: int = 0
+    total_correct: int = 0
     current_streak: int = 0
     longest_streak: int = 0
-    study_days: list[str] = Field(default_factory=list)
-    trend: list[TrendPoint] = Field(default_factory=list)
+    total_sets: int = 0
+    incomplete_sets: int = 0
     by_tier: dict[str, float] = Field(default_factory=dict)
-    weak_skills: list[SkillStat] = Field(default_factory=list)
-    strong_skills: list[SkillStat] = Field(default_factory=list)
     by_category: list[CategoryProgress] = Field(default_factory=list)
     documents: int = 0
     notes: int = 0
-    practice_sets: int = 0
 
 
 # ------------------------------------------------------------- misc

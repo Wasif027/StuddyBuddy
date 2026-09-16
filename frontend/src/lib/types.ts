@@ -61,6 +61,24 @@ export interface TokenUsage {
   cacheReadTokens: number;
 }
 
+export interface ChartPoint {
+  x: number;
+  y: number;
+}
+
+export interface ChartSeries {
+  name: string;
+  points: ChartPoint[];
+}
+
+export interface ChartSpec {
+  type: "line" | "bar" | "scatter";
+  title: string;
+  xLabel: string;
+  yLabel: string;
+  series: ChartSeries[];
+}
+
 export interface AnswerResponse {
   id: string;
   conversationId: string | null;
@@ -79,6 +97,7 @@ export interface AnswerResponse {
   citations: Citation[];
   sourceChunks: SourceChunk[];
   followUps: string[];
+  chart: ChartSpec | null;
   model: string;
   provider: string;
   latencyMs: number;
@@ -106,6 +125,7 @@ export interface User {
   username: string;
   displayName: string | null;
   studyLevel: string;
+  hasCustomKey: boolean;
   createdAt: string;
 }
 
@@ -184,6 +204,7 @@ export interface DocumentRead {
   chunkCount: number;
   slideCount: number;
   charCount: number;
+  imageKind: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -248,8 +269,11 @@ export interface AttemptRead {
   score: number;
   feedback: string;
   tier: string;
+  transcription: string | null;
   createdAt: string | null;
 }
+
+export type AnswerMode = "text" | "text_or_upload";
 
 export interface QuestionRead {
   id: string;
@@ -259,6 +283,7 @@ export interface QuestionRead {
   prompt: string;
   options: string[];
   skill: string | null;
+  answerMode: AnswerMode;
   answer: string | null;
   rubric: string | null;
   attempt: AttemptRead | null;
@@ -319,42 +344,37 @@ export interface RoutineDay {
 }
 
 /* -------------------------------------------------------------- progress */
-export interface TrendPoint {
-  date: string;
-  attempts: number;
-  accuracy: number;
-}
-
-export interface SkillStat {
-  skill: string;
-  category: string | null;
-  attempts: number;
+/** One practice set's result, chronological. Unanswered questions count as
+ * incorrect — an untouched set is a real 0/N point, not a gap. */
+export interface SetTrendPoint {
+  setId: string;
+  createdAt: string;
+  correct: number;
+  total: number;
   accuracy: number;
 }
 
 export interface CategoryProgress {
   category: string;
   label: string;
-  attempts: number;
-  accuracy: number;
+  totalSets: number;
+  solvedSets: number;
   docCount: number;
-  readiness: number;
+  byTier: Record<string, number>;
+  trend: SetTrendPoint[];
 }
 
 export interface ProgressResponse {
-  totalAttempts: number;
-  overallAccuracy: number;
+  totalQuestions: number;
+  totalCorrect: number;
   currentStreak: number;
   longestStreak: number;
-  studyDays: string[];
-  trend: TrendPoint[];
+  totalSets: number;
+  incompleteSets: number;
   byTier: Record<string, number>;
-  weakSkills: SkillStat[];
-  strongSkills: SkillStat[];
   byCategory: CategoryProgress[];
   documents: number;
   notes: number;
-  practiceSets: number;
 }
 
 /* ----------------------------------------------------------------- meta */

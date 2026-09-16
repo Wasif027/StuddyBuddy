@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.orm import Attempt, PracticeSet, Question, User
@@ -22,6 +23,9 @@ from app.services.assessment import generate_practice_set, grade_attempt
 from app.services.catalog import ensure_category
 
 router = APIRouter(prefix="/practice", tags=["practice"])
+settings = get_settings()
+
+_ANSWER_UPLOAD_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".pdf"}
 
 
 def _attempts_by_qid(db: Session, user_id: str, set_id: str) -> dict[str, Attempt]:
@@ -36,7 +40,8 @@ def _attempts_by_qid(db: Session, user_id: str, set_id: str) -> dict[str, Attemp
 def _attempt_read(a: Attempt) -> AttemptRead:
     return AttemptRead(
         id=a.id, question_id=a.question_id, user_answer=a.user_answer, correct=a.correct,
-        score=a.score, feedback=a.feedback, tier=a.tier, created_at=a.created_at,
+        score=a.score, feedback=a.feedback, tier=a.tier,
+        transcription=getattr(a, "transcription", None), created_at=a.created_at,
     )
 
 
@@ -45,6 +50,7 @@ def _question_read(q: Question, attempt: Attempt | None) -> QuestionRead:
     return QuestionRead(
         id=q.id, index=q.index, tier=q.tier.value, qtype=q.qtype.value, prompt=q.prompt,
         options=list(q.options_json or []), skill=q.skill,
+        answer_mode=getattr(q, "answer_mode", "text") or "text",
         answer=q.answer if done else None,
         rubric=q.rubric if done else None,
         attempt=_attempt_read(attempt) if attempt else None,
@@ -156,6 +162,56 @@ def grade(
         raise HTTPException(status_code=404, detail="question not found")
     attempt = grade_attempt(
         db, user, question, answer=body.answer, option_index=body.option_index
+    )
+    return GradeResponse(
+        attempt=_attempt_read(attempt),
+        answer=question.answer,
+        rubric=question.rubric,
+        model=ps.model,
+    )
+
+
+@router.post("/{set_id}/questions/{index}/grade-upload", response_model=GradeResponse)
+async def grade_upload(
+    set_id: str,
+    index: int,
+    file: UploadFile = File(...),
+    note: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> GradeResponse:
+    """Grade a photo / PDF of the student's handwritten working."""
+    ps = _owned_set(db, user, set_id)
+    question = next((q for q in ps.questions if q.index == index), None)
+    if question is None:
+        raise HTTPException(status_code=404, detail="question not found")
+    if getattr(question, "answer_mode", "text") != "text_or_upload":
+        raise HTTPException(status_code=422, detail="this question takes a typed answer")
+
+    name = file.filename or "answer"
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if ext not in _ANSWER_UPLOAD_EXT:
+        raise HTTPException(
+            status_code=415, detail=f"upload an image or PDF (got {ext or 'unknown'})"
+        )
+    raw = await file.read()
+    if len(raw) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="file too large")
+
+    from app.services.vision import transcribe_work
+
+    try:
+        prompt = question.prompt + (f"\n\n(Student note: {note})" if note else "")
+        transcription, tnotes = transcribe_work(raw, name, prompt)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if tnotes:
+        transcription = f"{transcription}\n\n[reader notes: {tnotes}]"
+    attempt = grade_attempt(
+        db, user, question, transcription=transcription, image_path=name[:512]
     )
     return GradeResponse(
         attempt=_attempt_read(attempt),

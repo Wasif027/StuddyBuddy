@@ -71,7 +71,7 @@ export function TopBar() {
       <span className="ml-1 hidden items-center gap-1.5 rounded-full border border-line bg-surface-sunken/60 px-2 py-[3px] sm:flex">
         <span className={cn("h-1.5 w-1.5 rounded-full", tone)} />
         <span className="text-2xs text-content-muted">
-          {!health ? "API offline" : health.llmActive ? health.llmModel : "offline mode"}
+          {!health ? "API offline" : health.llmActive ? "Tutor online" : "offline mode"}
         </span>
       </span>
 

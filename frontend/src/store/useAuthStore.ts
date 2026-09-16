@@ -20,6 +20,7 @@ interface AuthState {
     opts?: { displayName?: string; studyLevel?: string },
   ) => Promise<boolean>;
   patchUser: (u: User) => void;
+  setApiKey: (apiKey: string | null) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   clearError: () => void;
 }
@@ -69,6 +70,16 @@ export const useAuthStore = create<AuthState>((set) => {
     },
 
     patchUser: (user) => set({ user }),
+
+    async setApiKey(apiKey) {
+      try {
+        const user = await api.setApiKey(apiKey);
+        set({ user });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof ApiError ? err.message : "Couldn't save that key" };
+      }
+    },
 
     logout() {
       setToken(null);

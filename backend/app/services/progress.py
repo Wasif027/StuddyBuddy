@@ -1,4 +1,10 @@
-"""Progress dashboard aggregations — trends, streaks, weak-topic detection."""
+"""Progress dashboard aggregations — streaks, per-subject trends, tier breakdowns.
+
+Philosophy throughout: an unanswered question counts as incorrect, not as a
+gap. A practice set you generated but never started is real information (a
+0/N result), and hiding it would make "overall accuracy" and a subject's
+trend line lie by omission.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +12,10 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import get_settings
 from app.models.orm import Attempt, Category, Document, Note, PracticeSet, User
-from app.models.schemas import (
-    CategoryProgress,
-    ProgressResponse,
-    SkillStat,
-    TrendPoint,
-)
-
-settings = get_settings()
+from app.models.schemas import CategoryProgress, ProgressResponse, SetTrendPoint
 
 
 def _streaks(days: list[date]) -> tuple[int, int]:
@@ -44,27 +42,19 @@ def _streaks(days: list[date]) -> tuple[int, int]:
 
 
 def build(db: Session, user: User) -> ProgressResponse:
-    attempts = list(
+    sets = list(
         db.execute(
-            select(Attempt)
-            .where(Attempt.user_id == user.id)
-            .order_by(Attempt.created_at.desc())
-            .limit(settings.progress_attempt_window)
+            select(PracticeSet)
+            .where(PracticeSet.user_id == user.id)
+            .options(selectinload(PracticeSet.questions))
+            .order_by(PracticeSet.created_at)
         ).scalars().all()
     )
 
-    docs = int(db.execute(
-        select(func.count(Document.id)).where(Document.user_id == user.id)
-    ).scalar_one())
     notes = int(db.execute(
         select(func.count(Note.id)).where(Note.user_id == user.id)
     ).scalar_one())
-    sets = int(db.execute(
-        select(func.count(PracticeSet.id)).where(PracticeSet.user_id == user.id)
-    ).scalar_one())
-    cats = db.execute(
-        select(Category).where(Category.user_id == user.id)
-    ).scalars().all()
+    cats = db.execute(select(Category).where(Category.user_id == user.id)).scalars().all()
     cat_label = {c.slug: c.label for c in cats}
     cat_docs: dict[str, int] = defaultdict(int)
     for slug, n in db.execute(
@@ -72,72 +62,95 @@ def build(db: Session, user: User) -> ProgressResponse:
         .where(Document.user_id == user.id).group_by(Document.category)
     ).all():
         cat_docs[slug or "general"] = int(n)
+    docs = sum(cat_docs.values())  # same total, one fewer round trip to a remote DB
 
-    if not attempts:
+    if not sets:
         return ProgressResponse(
-            documents=docs, notes=notes, practice_sets=sets,
+            documents=docs, notes=notes,
             by_category=[
                 CategoryProgress(category=c.slug, label=c.label, doc_count=cat_docs.get(c.slug, 0))
                 for c in cats if cat_docs.get(c.slug, 0)
             ],
         )
 
-    n = len(attempts)
-    overall = sum(a.score for a in attempts) / n
+    # Latest attempt per question (a question can be re-answered; the most
+    # recent grade is what counts), then grouped by the set it belongs to.
+    all_attempts = list(
+        db.execute(
+            select(Attempt).where(Attempt.user_id == user.id).order_by(Attempt.created_at)
+        ).scalars().all()
+    )
+    latest_by_qid: dict[str, Attempt] = {}
+    for a in all_attempts:
+        if a.question_id:
+            latest_by_qid[a.question_id] = a
+    by_set: dict[str, dict[str, Attempt]] = defaultdict(dict)
+    for qid, a in latest_by_qid.items():
+        if a.practice_set_id:
+            by_set[a.practice_set_id][qid] = a
 
-    by_tier_hits: dict[str, list[float]] = defaultdict(list)
+    total_questions = 0
+    total_correct = 0
+    incomplete_sets = 0
+    by_tier_scores: dict[str, list[float]] = defaultdict(list)
     by_day: dict[date, list[float]] = defaultdict(list)
-    by_skill: dict[tuple[str, str | None], list[float]] = defaultdict(list)
-    by_cat: dict[str, list[float]] = defaultdict(list)
-    for a in attempts:
-        by_tier_hits[a.tier].append(a.score)
-        by_day[a.created_at.date()].append(a.score)
-        if a.skill:
-            by_skill[(a.skill, a.category)].append(a.score)
-        by_cat[a.category or "general"].append(a.score)
+    by_cat_sets: dict[str, list[PracticeSet]] = defaultdict(list)
+    by_cat_tier: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
-    trend = [
-        TrendPoint(date=d.isoformat(), attempts=len(v), accuracy=round(sum(v) / len(v), 3))
-        for d, v in sorted(by_day.items())
-    ][-30:]
+    for ps in sets:
+        qn = len(ps.questions)
+        total_questions += qn
+        attempts_here = by_set.get(ps.id, {})
+        correct_here = sum(1 for a in attempts_here.values() if a.correct)
+        total_correct += correct_here
+        if len(attempts_here) < qn:
+            incomplete_sets += 1
+
+        cat_key = ps.category or "general"
+        by_cat_sets[cat_key].append(ps)
+
+        for q in ps.questions:
+            a = attempts_here.get(q.id)
+            if a:
+                by_tier_scores[q.tier.value].append(a.score)
+                by_cat_tier[cat_key][q.tier.value].append(a.score)
+                by_day[a.created_at.date()].append(a.score)
+
     current, longest = _streaks(list(by_day.keys()))
 
-    skills = [
-        SkillStat(skill=s, category=c, attempts=len(v), accuracy=round(sum(v) / len(v), 3))
-        for (s, c), v in by_skill.items()
-        if len(v) >= 2
-    ]
-    weak = sorted(skills, key=lambda x: x.accuracy)[:6]
-    strong = sorted([s for s in skills if s.accuracy >= 0.75], key=lambda x: -x.accuracy)[:6]
-
     cat_progress: list[CategoryProgress] = []
-    seen_cats = set(by_cat) | {c.slug for c in cats if cat_docs.get(c.slug)}
+    seen_cats = set(by_cat_sets) | {c.slug for c in cats if cat_docs.get(c.slug)}
     for slug in sorted(seen_cats):
-        scores = by_cat.get(slug, [])
-        acc = round(sum(scores) / len(scores), 3) if scores else 0.0
-        d = cat_docs.get(slug, 0)
-        # readiness: mostly accuracy, lifted a little by having material + practice volume
-        vol = min(1.0, len(scores) / 22)  # ~2 full sets
-        readiness = round(min(1.0, 0.7 * acc + 0.2 * vol + (0.1 if d else 0.0)), 3) if scores else 0.0
-        cat_progress.append(
-            CategoryProgress(
-                category=slug, label=cat_label.get(slug, slug.replace("-", " ").title()),
-                attempts=len(scores), accuracy=acc, doc_count=d, readiness=readiness,
-            )
-        )
+        cat_sets = by_cat_sets.get(slug, [])
+        trend: list[SetTrendPoint] = []
+        solved = 0
+        for ps in cat_sets:
+            qn = len(ps.questions)
+            attempts_here = by_set.get(ps.id, {})
+            correct_here = sum(1 for a in attempts_here.values() if a.correct)
+            if qn and len(attempts_here) >= qn:
+                solved += 1
+            trend.append(SetTrendPoint(
+                set_id=ps.id, created_at=ps.created_at.isoformat(),
+                correct=correct_here, total=qn,
+                accuracy=round(correct_here / qn, 3) if qn else 0.0,
+            ))
+        tier_acc = {t: round(sum(v) / len(v), 3) for t, v in by_cat_tier.get(slug, {}).items()}
+        cat_progress.append(CategoryProgress(
+            category=slug, label=cat_label.get(slug, slug.replace("-", " ").title()),
+            total_sets=len(cat_sets), solved_sets=solved,
+            doc_count=cat_docs.get(slug, 0), by_tier=tier_acc, trend=trend,
+        ))
 
     return ProgressResponse(
-        total_attempts=n,
-        overall_accuracy=round(overall, 3),
+        total_questions=total_questions,
+        total_correct=total_correct,
         current_streak=current,
         longest_streak=longest,
-        study_days=sorted(d.isoformat() for d in by_day),
-        trend=trend,
-        by_tier={k: round(sum(v) / len(v), 3) for k, v in by_tier_hits.items()},
-        weak_skills=weak,
-        strong_skills=strong,
+        total_sets=len(sets),
+        incomplete_sets=incomplete_sets,
+        by_tier={t: round(sum(v) / len(v), 3) for t, v in by_tier_scores.items()},
         by_category=cat_progress,
         documents=docs,
         notes=notes,
-        practice_sets=sets,
     )

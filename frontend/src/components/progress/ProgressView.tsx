@@ -2,8 +2,7 @@
 
 import { useEffect } from "react";
 
-import type { SkillStat, TrendPoint } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { CategoryProgress, SetTrendPoint } from "@/lib/types";
 import { useStudyStore } from "@/store/useStudyStore";
 import { ScoreBar } from "@/components/ui/ScoreBar";
 import {
@@ -16,6 +15,8 @@ import {
 } from "@/components/ui/icons";
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
+const TIER_ORDER = ["easy", "medium", "hard", "brutal"] as const;
+const TIER_LABEL: Record<string, string> = { easy: "easy", medium: "medium", hard: "hard", brutal: "very hard" };
 
 export function ProgressView() {
   const p = useStudyStore((s) => s.progress);
@@ -36,7 +37,7 @@ export function ProgressView() {
     );
   }
 
-  if (!p || p.totalAttempts === 0) {
+  if (!p || p.totalSets === 0) {
     return (
       <div className="mx-auto w-full max-w-3xl px-5 py-8">
         <h1 className="text-xl font-semibold tracking-tight text-content-primary">Progress</h1>
@@ -44,7 +45,7 @@ export function ProgressView() {
           <ChartLineUp className="mx-auto h-7 w-7 text-content-muted" />
           <p className="mt-2 text-sm font-medium text-content-secondary">Nothing to chart yet</p>
           <p className="mt-1 text-2xs text-content-muted">
-            Answer a practice set and your scores, streak and weak topics show up here.
+            Make a practice set and your scores, streak and per-subject trend show up here.
           </p>
           <button onClick={() => generate({ topic: "a topic you choose" })} className="btn btn-accent mt-4 h-8 px-4 text-xs">
             <Exam className="h-3.5 w-3.5" /> Make a practice set
@@ -54,64 +55,64 @@ export function ProgressView() {
     );
   }
 
+  const overallPct = p.totalQuestions ? p.totalCorrect / p.totalQuestions : 0;
+
   return (
     <div className="mx-auto w-full max-w-3xl px-5 py-8">
       <h1 className="text-xl font-semibold tracking-tight text-content-primary">Progress</h1>
 
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Tile icon={Target} label="Overall" value={pct(p.overallAccuracy)} sub={`${p.totalAttempts} answered`} />
+        <Tile
+          icon={Target}
+          label="Overall"
+          value={`${p.totalCorrect}/${p.totalQuestions}`}
+          sub={`${pct(overallPct)} correct`}
+        />
         <Tile icon={ClockCounterClockwise} label="Streak" value={`${p.currentStreak}d`} sub={`best ${p.longestStreak}d`} />
-        <Tile icon={Exam} label="Sets" value={String(p.practiceSets)} />
+        <Tile icon={Exam} label="Sets" value={String(p.totalSets)} sub={`${p.incompleteSets} incomplete`} />
         <Tile icon={Books} label="Materials" value={String(p.documents)} sub={`${p.notes} notes`} />
       </div>
-
-      {p.trend.length > 1 && (
-        <section className="card mt-5 p-4">
-          <p className="label mb-3">Accuracy over time</p>
-          <Sparkline points={p.trend} />
-        </section>
-      )}
 
       {Object.keys(p.byTier).length > 0 && (
         <section className="card mt-5 space-y-2 p-4">
           <p className="label mb-1">By difficulty</p>
-          {["easy", "medium", "hard", "brutal"].map((t) =>
-            p.byTier[t] != null ? (
-              <ScoreBar key={t} label={t === "brutal" ? "very hard" : t} score={p.byTier[t]} />
-            ) : null,
+          {TIER_ORDER.map((t) =>
+            p.byTier[t] != null ? <ScoreBar key={t} label={TIER_LABEL[t]} score={p.byTier[t]} /> : null,
           )}
         </section>
       )}
 
-      <div className="mt-5 grid gap-4 sm:grid-cols-2">
-        <SkillList
-          title="Work on these"
-          skills={p.weakSkills}
-          tone="text-caution"
-          onPractice={(s) => generate({ topic: s.skill, category: s.category })}
-        />
-        <SkillList title="Solid" skills={p.strongSkills} tone="text-positive" />
-      </div>
-
       {p.byCategory.length > 0 && (
-        <section className="card mt-5 space-y-2.5 p-4">
-          <p className="label mb-1">Subjects</p>
+        <section className="mt-5 space-y-3">
+          <p className="label px-1">Subjects</p>
           {p.byCategory.map((c) => (
-            <div key={c.category}>
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-content-primary">{c.label}</span>
-                <span className="text-2xs text-content-muted">
-                  {c.attempts} answered · {c.docCount} materials
-                </span>
-              </div>
-              <ScoreBar
-                label="ready"
-                score={c.readiness}
-                sublabel={c.attempts ? pct(c.readiness) : "—"}
-              />
-            </div>
+            <SubjectCard key={c.category} c={c} />
           ))}
         </section>
+      )}
+    </div>
+  );
+}
+
+function SubjectCard({ c }: { c: CategoryProgress }) {
+  return (
+    <div className="card space-y-2.5 p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-content-primary">{c.label}</span>
+        <span className="text-2xs text-content-muted">
+          {c.totalSets} {c.totalSets === 1 ? "set" : "sets"} · {c.solvedSets} solved · {c.docCount}{" "}
+          {c.docCount === 1 ? "material" : "materials"}
+        </span>
+      </div>
+
+      {c.trend.length > 1 && <SetSparkline points={c.trend} />}
+
+      {TIER_ORDER.some((t) => c.byTier[t] != null) && (
+        <div className="space-y-1.5 border-t border-line pt-2.5">
+          {TIER_ORDER.map((t) =>
+            c.byTier[t] != null ? <ScoreBar key={t} label={TIER_LABEL[t]} score={c.byTier[t]} /> : null,
+          )}
+        </div>
       )}
     </div>
   );
@@ -139,7 +140,9 @@ function Tile({
   );
 }
 
-function Sparkline({ points }: { points: TrendPoint[] }) {
+/** One accuracy line per practice set in a subject, chronological. A set
+ * with zero answered questions is a real 0% point — it isn't skipped. */
+function SetSparkline({ points }: { points: SetTrendPoint[] }) {
   const w = 100;
   const h = 34;
   const xs = points.map((_, i) => (i / (points.length - 1)) * w);
@@ -147,56 +150,18 @@ function Sparkline({ points }: { points: TrendPoint[] }) {
   const d = xs.map((x, i) => `${i ? "L" : "M"}${x.toFixed(1)} ${ys[i].toFixed(1)}`).join(" ");
   return (
     <div>
-      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-16 w-full">
-        <path
-          d={`${d} L${w} ${h} L0 ${h} Z`}
-          fill="rgb(var(--accent) / 0.12)"
-          stroke="none"
-        />
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-14 w-full">
+        <path d={`${d} L${w} ${h} L0 ${h} Z`} fill="rgb(var(--accent) / 0.12)" stroke="none" />
         <path d={d} fill="none" stroke="rgb(var(--accent))" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
       </svg>
       <div className="mt-1 flex justify-between text-[0.58rem] text-content-muted">
-        <span>{points[0].date.slice(5)}</span>
-        <span>{points[points.length - 1].date.slice(5)}</span>
+        <span>
+          set 1 · {points[0].correct}/{points[0].total}
+        </span>
+        <span>
+          set {points.length} · {points[points.length - 1].correct}/{points[points.length - 1].total}
+        </span>
       </div>
     </div>
-  );
-}
-
-function SkillList({
-  title,
-  skills,
-  tone,
-  onPractice,
-}: {
-  title: string;
-  skills: SkillStat[];
-  tone: string;
-  onPractice?: (s: SkillStat) => void;
-}) {
-  return (
-    <section className="card p-4">
-      <p className="label mb-2">{title}</p>
-      {skills.length === 0 ? (
-        <p className="text-2xs text-content-muted">Not enough data yet.</p>
-      ) : (
-        <ul className="space-y-1.5">
-          {skills.map((s) => (
-            <li key={`${s.skill}-${s.category}`} className="flex items-center gap-2 text-xs">
-              <span className={cn("font-medium", tone)}>{pct(s.accuracy)}</span>
-              <span className="min-w-0 flex-1 truncate text-content-secondary">{s.skill}</span>
-              {onPractice && (
-                <button
-                  onClick={() => onPractice(s)}
-                  className="shrink-0 text-2xs text-accent hover:underline"
-                >
-                  practice
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }

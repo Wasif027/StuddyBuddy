@@ -20,12 +20,14 @@ settings = get_settings()
 
 _KINDS = {"guide", "glossary", "cheatsheet", "concept_map", "flashcards", "key_slides"}
 
+_MATH = " Write maths/science notation in LaTeX ($...$ inline, $$...$$ display)."
+
 _SYS = {
     "guide": (
         "You are StudyBuddy. Turn the student's material into a revision guide in Markdown: "
         "a short overview, then the key ideas as headed sections with the definitions, "
         "formulae, dates and examples that matter, and a 'likely exam questions' list at the "
-        "end. Faithful to the material; don't invent. Return ONLY JSON: {\"markdown\": string}."
+        "end. Faithful to the material; don't invent." + _MATH + " Return ONLY JSON: {\"markdown\": string}."
     ),
     "glossary": (
         "You are StudyBuddy. Extract every important term from the material and define each "
@@ -35,7 +37,7 @@ _SYS = {
     "cheatsheet": (
         "You are StudyBuddy. Produce a dense one-page cheat sheet in Markdown: only the "
         "facts, formulae, definitions and steps worth memorising, tightly grouped under short "
-        "headings. No filler sentences. Return ONLY JSON: {\"markdown\": string}."
+        "headings. No filler sentences." + _MATH + " Return ONLY JSON: {\"markdown\": string}."
     ),
     "concept_map": (
         "You are StudyBuddy. Build a concept map of the material as a tree (2-4 levels, "
@@ -46,7 +48,7 @@ _SYS = {
     "flashcards": (
         "You are StudyBuddy. Make 10-20 flashcards from the material — front is a question or "
         "term, back is a concise answer, hint optional. Cover the whole material, mix recall "
-        "and application. Return ONLY JSON: {\"flashcards\": [{\"front\":..,\"back\":..,\"hint\":..}]}."
+        "and application." + _MATH + " Return ONLY JSON: {\"flashcards\": [{\"front\":..,\"back\":..,\"hint\":..}]}."
     ),
     "key_slides": (
         "You are StudyBuddy. From the list of slides (number + title + bullets), pick the "
@@ -85,6 +87,10 @@ def _slides(db: Session, document_id: str) -> list[DocumentSlide]:
 
 
 def _offline(kind: str, text: str, title: str) -> dict:
+    # Chunk text is prefixed with its own "## Heading" markers (_doc_text). Those
+    # aren't sentence-terminated, so they'd otherwise glom onto the front of the
+    # next real sentence — e.g. a bullet reading "## Page 1 Osmosis is...".
+    text = re.sub(r"(?m)^#{1,6}\s*.*$", "", text)
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
     if kind == "flashcards":
         cards = []
@@ -130,10 +136,14 @@ def build(db: Session, user: User, document_id: str, kind: str) -> StudyGuideRes
                 data = llm.json_complete(_SYS["key_slides"], f"{doc.title}\n\n{listing}", max_tokens=800)
                 for s in data.get("slides", []):
                     picks[int(s["index"])] = str(s.get("why", "")).strip()
-                model = settings.active_model_name
             except Exception as exc:  # pragma: no cover
                 logger.warning("key_slides_failed", error=str(exc))
-        if not picks:
+        if picks:
+            # Only claim the real model when it actually produced usable picks —
+            # a "successful" call that came back empty/unparseable must not be
+            # reported as if the model wrote this.
+            model = settings.active_model_name
+        else:
             ranked = sorted(slides, key=lambda s: s.data_score, reverse=True)[:8]
             picks = {s.index: "Information-dense slide." for s in ranked}
         chosen = [s for s in slides if s.index in picks]
@@ -156,11 +166,15 @@ def build(db: Session, user: User, document_id: str, kind: str) -> StudyGuideRes
     data: dict = {}
     if llm.provider_ready():
         try:
-            data = llm.json_complete(_SYS[kind], f"Material: {doc.title}\n\n{text}", max_tokens=3000)
-            model = settings.active_model_name
+            data = llm.json_complete(_SYS[kind], f"Material: {doc.title}\n\n{text}", max_tokens=4500)
         except Exception as exc:  # pragma: no cover
             logger.warning("study_guide_failed", kind=kind, error=str(exc))
-    if not data:
+    if data:
+        # Only claim the real model when it actually returned something usable
+        # — a "successful" call whose JSON we couldn't parse must fall back to
+        # the offline extract WITHOUT being reported as model-generated.
+        model = settings.active_model_name
+    else:
         data = _offline(kind, text, _TITLES[kind])
 
     resp = StudyGuideResponse(document_id=document_id, kind=kind, title=title, model=model)

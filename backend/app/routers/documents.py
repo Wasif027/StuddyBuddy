@@ -23,7 +23,7 @@ from app.models.schemas import (
     IngestionResponse,
     SlidePreview,
 )
-from app.services.catalog import ensure_category
+from app.services.catalog import ensure_category, list_labels, match_or_create_category
 from app.services.ingestion import (
     IMAGE_UPLOAD_TYPES,
     SUPPORTED_UPLOAD_TYPES,
@@ -64,6 +64,7 @@ def _to_read(doc: Document, chunk_count: int, slide_count: int = 0) -> DocumentR
         chunk_count=chunk_count,
         slide_count=slide_count,
         char_count=doc.char_count,
+        image_kind=doc.metadata_json.get("imageKind"),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -132,14 +133,17 @@ async def upload_document(
         from app.services.vision import describe_image
 
         try:
-            result = describe_image(raw, name, hint=hint)
+            result = describe_image(
+                raw, name, hint=hint,
+                existing_subjects=list_labels(db, user) if not slug else None,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         if not slug and result.subject:
-            slug = ensure_category(db, user, result.subject)
+            slug = match_or_create_category(db, user, result.subject)
 
         doc, chunks, deduped = ingest_content(
             db,
@@ -182,6 +186,15 @@ async def upload_document(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not parsed.text.strip():
         raise HTTPException(status_code=422, detail="no readable content in this file")
+
+    if not slug:
+        from app.services.llm import classify_document_subject
+
+        guessed = classify_document_subject(
+            title or parsed.title, parsed.text, existing_subjects=list_labels(db, user)
+        )
+        if guessed:
+            slug = match_or_create_category(db, user, guessed)
 
     doc, chunks, deduped = ingest_content(
         db,

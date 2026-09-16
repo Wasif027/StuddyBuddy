@@ -17,6 +17,7 @@ import numpy as np
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.request_context import get_user_llm_key
 from app.core.telemetry import tracer
 
 logger = get_logger(__name__)
@@ -63,7 +64,7 @@ def _openai(texts: list[str]) -> list[list[float]]:  # pragma: no cover - networ
     from openai import OpenAI
 
     client = OpenAI(
-        api_key=settings.resolved_embedding_api_key or "not-needed",
+        api_key=get_user_llm_key() or settings.resolved_embedding_api_key or "not-needed",
         base_url=settings.resolved_embedding_base_url or None,
         timeout=settings.llm_timeout_seconds,
         max_retries=2,

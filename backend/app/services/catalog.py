@@ -55,6 +55,16 @@ def seed_default_categories(db: Session, user: User) -> None:
     db.flush()
 
 
+def list_labels(db: Session, user: User) -> list[str]:
+    """The student's own category labels — fed to auto-detect-subject prompts so
+    they reuse an existing subject instead of coining a near-duplicate."""
+    return list(
+        db.execute(
+            select(Category.label).where(Category.user_id == user.id).order_by(Category.label)
+        ).scalars().all()
+    )
+
+
 def ensure_category(db: Session, user: User, value: str | None) -> str | None:
     """Return a category slug, creating the Category row if the value is new.
     ``value`` may be a slug or a human label."""
@@ -73,6 +83,26 @@ def ensure_category(db: Session, user: User, value: str | None) -> str | None:
         db.add(row)
         db.flush()
     return row.slug
+
+
+def match_or_create_category(db: Session, user: User, guess: str | None) -> str | None:
+    """Like :func:`ensure_category`, but for a free-text auto-detected guess
+    (from vision/document classification) rather than a value the user picked
+    themselves. Tries a case-insensitive LABEL match against the user's
+    existing categories first — a couple of default categories (e.g. "Business
+    Studies") have a hand-picked slug that a fresh ``slugify(guess)`` won't
+    land on even when the guess is a perfect semantic match, which would
+    otherwise silently spawn a near-duplicate category. Falls back to
+    ``ensure_category`` (slug-based) when nothing matches."""
+    if not guess or not guess.strip():
+        return None
+    needle = guess.strip().lower()
+    row = db.execute(
+        select(Category).where(Category.user_id == user.id, func.lower(Category.label) == needle)
+    ).scalar_one_or_none()
+    if row is not None:
+        return row.slug
+    return ensure_category(db, user, guess)
 
 
 def category_label(db: Session, user_id: str, slug: str | None) -> str:

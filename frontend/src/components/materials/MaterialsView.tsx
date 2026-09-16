@@ -9,6 +9,7 @@ import { toast } from "@/store/useToast";
 import { useAppStore } from "@/store/useAppStore";
 import { useUIStore } from "@/store/useUIStore";
 import { AnswerText } from "@/components/chat/AnswerText";
+import { MathText } from "@/components/ui/MathText";
 import {
   ArrowLeft,
   Books,
@@ -50,11 +51,20 @@ export function MaterialsView() {
   const summariseDoc = useAppStore((s) => s.summariseDoc);
   const refreshMeta = useAppStore((s) => s.refreshMeta);
   const setIngestOpen = useUIStore((s) => s.setIngestOpen);
+  const openDocumentId = useUIStore((s) => s.openDocumentId);
+  const setOpenDocumentId = useUIStore((s) => s.setOpenDocumentId);
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
     refreshMeta();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (openDocumentId) {
+      setOpenId(openDocumentId);
+      setOpenDocumentId(null);
+    }
+  }, [openDocumentId, setOpenDocumentId]);
 
   const open = documents.find((d) => d.id === openId);
   if (open) {
@@ -170,7 +180,8 @@ function MaterialDetail({
     }
   };
 
-  const guides = doc.slideCount ? GUIDES : GUIDES.filter((g) => g.kind !== "key_slides");
+  const isTimetable = doc.imageKind === "timetable";
+  const guides = isTimetable ? [] : doc.slideCount ? GUIDES : GUIDES.filter((g) => g.kind !== "key_slides");
 
   return (
     <>
@@ -246,11 +257,11 @@ function MaterialDetail({
                     Slide {s.index}
                     {s.title ? ` — ${s.title}` : ""}
                   </p>
-                  {s.notes && <p className="mt-1 text-2xs text-content-secondary">{s.notes}</p>}
+                  {s.notes && <MathText text={s.notes} className="mt-1 block text-2xs text-content-secondary" />}
                   {s.bullets.length > 0 && (
                     <ul className="mt-1.5 list-disc pl-4 text-2xs text-content-muted">
                       {s.bullets.slice(0, 4).map((b, i) => (
-                        <li key={i}>{b}</li>
+                        <li key={i}><MathText text={b} /></li>
                       ))}
                     </ul>
                   )}
@@ -287,14 +298,15 @@ function Flashcard({ front, back, hint }: { front: string; back: string; hint: s
       onClick={() => setFlipped((v) => !v)}
       className="min-h-[5rem] rounded-lg border border-line bg-surface-sunken p-3 text-left text-xs transition-colors hover:border-accent/40"
     >
-      <p className={cn("font-medium", flipped ? "text-content-muted" : "text-content-primary")}>
-        {front}
-      </p>
+      <MathText
+        text={front}
+        className={cn("font-medium", flipped ? "text-content-muted" : "text-content-primary")}
+      />
       {flipped ? (
-        <p className="mt-1.5 text-content-secondary">{back}</p>
+        <MathText text={back} className="mt-1.5 block text-content-secondary" />
       ) : (
         <p className="mt-1.5 text-2xs text-content-muted">
-          {hint ? `Hint: ${hint}` : "tap to flip"}
+          {hint ? <MathText text={`Hint: ${hint}`} /> : "tap to flip"}
         </p>
       )}
     </button>
@@ -306,8 +318,8 @@ function ConceptTree({ nodes }: { nodes: { id: string; label: string; parent: st
   const render = (pid: string | null, depth: number): React.ReactNode =>
     children(pid).map((n) => (
       <div key={n.id} style={{ marginLeft: depth * 14 }} className="border-l border-line pl-3">
-        <p className="text-xs font-medium text-content-primary">{n.label}</p>
-        {n.note && <p className="text-2xs text-content-muted">{n.note}</p>}
+        <MathText text={n.label} className="block text-xs font-medium text-content-primary" />
+        {n.note && <MathText text={n.note} className="block text-2xs text-content-muted" />}
         {render(n.id, depth + 1)}
       </div>
     ));

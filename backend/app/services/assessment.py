@@ -61,25 +61,41 @@ _GEN_SYSTEM = (
     "[\"True\", \"False\"]; otherwise [].\n"
     "- answer: the answer key. mcq/true_false → the exact correct option text. numeric → the "
     "number with its unit. short → the expected answer. explain → a concise model answer.\n"
-    "- rubric: 1-3 sentences the student sees after answering — what a full-credit answer "
-    "needs, plus the mark breakdown for 'explain'.\n"
+    "- answer_mode: \"text\" or \"text_or_upload\". Use \"text_or_upload\" when a good answer "
+    "involves showing working — a derivation or proof, a multi-step calculation, a diagram or "
+    "sketch, algebra the student would normally do on paper. Use \"text\" for pure theory, "
+    "recall, definitions, compare/contrast, mcq and true_false.\n"
+    "- rubric: what a FULL-CREDIT answer needs FROM A STUDENT AT THIS EXACT LEVEL — 1-3 "
+    "sentences, with the mark breakdown for 'explain'. A Year-8 answer and an undergraduate "
+    "answer to the same topic are marked to very different bars; write the rubric for the "
+    "stated level, not the hardest possible answer.\n"
     "- skill: a 2-4 word sub-skill this tests (e.g. 'balancing equations', 'osmosis "
     "direction') — used to track weak areas.\n\n"
     "Ground the questions in the CONTEXT passages when they're relevant; otherwise use "
     "standard curriculum knowledge for the stated level. Vary the sub-skills across the set.\n"
+    "Write any maths/science notation in LaTeX ($...$ inline, $$...$$ display) — it is "
+    "rendered for the student.\n"
     'Return ONLY JSON: {"questions": [ ... ]}'
 )
 
 _GRADE_SYSTEM = (
-    "You are marking one exam answer for a student. You are given the question, the answer "
-    "key, the marking rubric, and the student's answer.\n"
+    "You are marking one exam answer. You are given the student's LEVEL, the question, the "
+    "answer key, the marking rubric, and the student's answer. The answer may have been "
+    "transcribed from a photo of handwritten working — if so, judge the reasoning and the "
+    "maths, not transcription noise or spelling.\n\n"
+    "Mark to the bar for the STATED LEVEL — the rubric is written for that level. An answer "
+    "that meets the level's expectations is full marks even if a specialist could say more; "
+    "an answer below the level's expectations is not.\n\n"
     "Return:\n"
-    "- score: 0.0 to 1.0 — award partial credit generously for partially-right answers, but "
-    "don't give credit for wrong or empty answers. A blank or 'I don't know' scores 0.\n"
+    "- score: 0.0-1.0. Partial credit generously for partially-right answers; 0 for wrong, "
+    "empty, or 'I don't know'.\n"
     "- correct: true if score >= 0.6\n"
-    "- feedback: 2-3 sentences addressed to the student ('you…'). Say what they got right, "
-    "what's missing or wrong, and the ONE thing to review. Encouraging but honest.\n"
-    'Return ONLY JSON: {"score": number, "correct": boolean, "feedback": string}'
+    "- verdict: \"correct\" | \"partial\" | \"incorrect\"\n"
+    "- feedback: 2-4 sentences to the student ('you…'). If not fully correct, name the "
+    "SPECIFIC problem — which step is wrong, which term/case/step is missing, which "
+    "misconception is showing — not just 'review this'. For a theory answer, say exactly "
+    "which required point was absent or misstated. Encouraging but precise.\n"
+    'Return ONLY JSON: {"score": number, "correct": boolean, "verdict": string, "feedback": string}'
 )
 
 
@@ -92,6 +108,7 @@ def _gather_context(
     document_id: str | None,
     conversation_id: str | None,
     category: str | None,
+    note_context: str | None = None,
 ) -> tuple[str, str, str | None]:
     """Return (resolved_topic, context_text, source)."""
     if document_id:
@@ -113,6 +130,12 @@ def _gather_context(
             rendered = llm.render_context(conv.context_json or {})
             if rendered:
                 chat_ctx = "WHAT THIS CHAT HAS ESTABLISHED (honour these definitions):\n" + rendered + "\n\n"
+
+    # A note's own body is already the exact material to quiz on — use it
+    # directly as context instead of a hybrid-search query so the display
+    # "topic" stays a short clean label (the note's title), not the whole body.
+    if note_context:
+        return (topic or "your note", (chat_ctx + note_context)[:9000], "note")
 
     if topic:
         scope = Scope(user_id=user.id, category=category, conversation_id=conversation_id)
@@ -139,6 +162,23 @@ def _gather_context(
 
 
 # --------------------------------------------------------------- generation
+_WORKING_RE = re.compile(
+    r"\b(prove|proof|derive|derivation|show that|calculate|evaluate|solve|"
+    r"integrate|differentiate|sketch|draw|plot|construct|find the (value|equation|area|"
+    r"gradient|volume)|work out|simplify|expand|factou?rise|balance the equation)\b",
+    re.I,
+)
+_ANSWER_MODES = {"text", "text_or_upload"}
+
+
+def _infer_answer_mode(qtype: str, prompt: str) -> str:
+    if qtype in ("mcq", "true_false", "short"):
+        return "text"
+    if qtype == "numeric" or _WORKING_RE.search(prompt or ""):
+        return "text_or_upload"
+    return "text"
+
+
 def _coerce_question(raw: dict, index: int, fallback_tier: str) -> Question | None:
     if not isinstance(raw, dict):
         return None
@@ -157,6 +197,11 @@ def _coerce_question(raw: dict, index: int, fallback_tier: str) -> Question | No
     if qtype == "mcq" and len(options) < 2:
         qtype = "short"
         options = []
+    mode = str(raw.get("answer_mode") or raw.get("answerMode") or "").strip().lower()
+    if mode not in _ANSWER_MODES:
+        mode = _infer_answer_mode(qtype, prompt)
+    elif qtype in ("mcq", "true_false"):
+        mode = "text"  # never makes sense to upload a photo for a multiple-choice
     return Question(
         id=str(uuid.uuid4()),
         index=index,
@@ -167,6 +212,7 @@ def _coerce_question(raw: dict, index: int, fallback_tier: str) -> Question | No
         answer=str(raw.get("answer", "")).strip(),
         rubric=str(raw.get("rubric", "")).strip(),
         skill=(str(raw.get("skill", "")).strip() or None),
+        answer_mode=mode,
     )
 
 
@@ -213,10 +259,11 @@ def generate_practice_set(
     conversation_id: str | None = None,
     category: str | None = None,
     study_level: str | None = None,
+    note_context: str | None = None,
 ) -> PracticeSet:
     resolved_topic, context, source = _gather_context(
         db, user, topic=topic, document_id=document_id,
-        conversation_id=conversation_id, category=category,
+        conversation_id=conversation_id, category=category, note_context=note_context,
     )
     level = (study_level or "").strip() or user.study_level or settings.default_study_level
 
@@ -229,14 +276,18 @@ def generate_practice_set(
     raw_qs: list[dict] = []
     if llm.provider_ready():
         try:
-            data = llm.json_complete(_GEN_SYSTEM, user_msg, max_tokens=3200, hard=True)
+            data = llm.json_complete(_GEN_SYSTEM, user_msg, max_tokens=6000, hard=True)
             raw_qs = data.get("questions", []) if isinstance(data, dict) else []
             model = settings.hard_model_name
         except Exception as exc:  # pragma: no cover - network
             logger.warning("practice_generation_failed", error=str(exc))
-    if len(raw_qs) < _TOTAL:
+    if not raw_qs:
         raw_qs = _offline_questions(resolved_topic, context)
         model = model or "offline-template"
+    elif len(raw_qs) < _TOTAL:
+        # Model gave us a partial set (truncation etc.) — keep the good ones,
+        # top up the rest from templates rather than throwing it all away.
+        raw_qs = list(raw_qs) + _offline_questions(resolved_topic, context)[len(raw_qs):]
 
     seq = _tier_sequence()
     questions: list[Question] = []
@@ -265,7 +316,7 @@ def generate_practice_set(
 
 
 # --------------------------------------------------------------- grading
-_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
+_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*(?:[eE][+-]?\d+)?")
 
 
 def _num(text: str) -> float | None:
@@ -288,9 +339,11 @@ def _deterministic_grade(q: Question, answer: str, option_index: int | None) -> 
             chosen = q.options_json[option_index]
         elif answer:
             chosen = answer
-        ok = _norm(chosen) == _norm(q.answer) or (
-            bool(chosen) and _norm(chosen) in _norm(q.answer)
-        )
+        # Exact normalised match only. A substring check here is unsafe: a wrong
+        # distractor's text is often literally contained in the correct answer's
+        # text (e.g. picking "Energy" when the answer is "Kinetic energy" must
+        # NOT score as correct).
+        ok = _norm(chosen) == _norm(q.answer)
         fb = "Correct." if ok else f"Not quite — the answer is **{q.answer}**."
         return (1.0 if ok else 0.0, f"{fb} {q.rubric}".strip())
 
@@ -313,29 +366,46 @@ def grade_attempt(
     *,
     answer: str = "",
     option_index: int | None = None,
+    transcription: str | None = None,
+    image_path: str | None = None,
 ) -> Attempt:
     answer = (answer or "").strip()
-    det = _deterministic_grade(question, answer, option_index)
+    # A photo of working: the vision transcription becomes the answer to grade.
+    from_upload = bool(transcription)
+    graded_answer = (transcription or "").strip() if from_upload else answer
+
+    ps = question.practice_set
+    level = (ps.study_level if ps else "") or user.study_level or settings.default_study_level
+
+    det = None if from_upload else _deterministic_grade(question, answer, option_index)
     if det is not None:
         score, feedback = det
-    elif not answer:
-        score, feedback = 0.0, "You didn't write an answer. " + (question.rubric or "")
+    elif not graded_answer:
+        score = 0.0
+        feedback = (
+            "I couldn't read any working in that upload — try a clearer photo, or type your answer."
+            if image_path else "You didn't write an answer. " + (question.rubric or "")
+        )
     elif llm.provider_ready():
         body = (
-            f"Question: {question.prompt}\n\nAnswer key: {question.answer}\n\n"
-            f"Rubric: {question.rubric}\n\nStudent's answer: {answer}"
+            f"Student level: {level}\n\nQuestion: {question.prompt}\n\n"
+            f"Answer key: {question.answer}\n\nRubric: {question.rubric}\n\n"
+            + (
+                f"Student's answer (transcribed from a photo of handwritten working):\n{graded_answer}"
+                if from_upload
+                else f"Student's answer: {graded_answer}"
+            )
         )
         try:
-            data = llm.json_complete(_GRADE_SYSTEM, body, max_tokens=400, hard=True)
+            data = llm.json_complete(_GRADE_SYSTEM, body, max_tokens=600, hard=True)
             score = max(0.0, min(1.0, float(data.get("score", 0.0))))
             feedback = str(data.get("feedback", "")).strip() or question.rubric
         except Exception as exc:  # pragma: no cover - network
             logger.warning("grade_failed", error=str(exc))
-            score, feedback = _keyword_grade(question, answer)
+            score, feedback = _keyword_grade(question, graded_answer)
     else:
-        score, feedback = _keyword_grade(question, answer)
+        score, feedback = _keyword_grade(question, graded_answer)
 
-    ps = question.practice_set
     attempt = Attempt(
         id=str(uuid.uuid4()),
         user_id=user.id,
@@ -345,10 +415,12 @@ def grade_attempt(
             question.options_json[option_index]
             if option_index is not None and 0 <= option_index < len(question.options_json or [])
             else ""
-        ),
+        ) or ("[uploaded working]" if from_upload else ""),
         correct=score >= 0.6,
         score=round(score, 3),
         feedback=feedback,
+        transcription=transcription or None,
+        answer_image_path=image_path or None,
         tier=question.tier.value,
         topic=(ps.topic if ps else "")[:300],
         category=ps.category if ps else None,

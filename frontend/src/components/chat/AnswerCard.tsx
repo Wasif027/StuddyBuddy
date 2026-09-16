@@ -23,11 +23,14 @@ import {
   Warning,
 } from "@/components/ui/icons";
 import { AnswerText } from "./AnswerText";
+import { ChartView } from "./ChartView";
 
 export function AnswerCard({ message }: { message: ChatMessage }) {
   const highlightChunk = useAppStore((s) => s.highlightChunk);
   const ask = useAppStore((s) => s.ask);
   const streaming = useAppStore((s) => s.streaming);
+  const groundingDone = useAppStore((s) => s.groundingDone);
+  const streamingChunks = useAppStore((s) => s.streamingChunks);
   const activeId = useAppStore((s) => s.activeId);
   const generate = useStudyStore((s) => s.generatePracticeSet);
   const generating = useStudyStore((s) => s.generating);
@@ -88,7 +91,10 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
   };
 
   return (
-    <div className="rounded-xl border border-line bg-surface-raised p-5 shadow-[0_1px_2px_rgb(var(--shadow)/0.04),0_18px_44px_-22px_rgb(var(--shadow)/0.16)]">
+    <div
+      className="rounded-xl border border-line bg-surface-raised shadow-[0_1px_2px_rgb(var(--shadow)/0.04),0_18px_44px_-22px_rgb(var(--shadow)/0.16)]"
+      style={{ padding: "calc(var(--space-scale, 1) * 1.25rem)" }}
+    >
       {answer?.compareMode && (
         <p className="mb-3 inline-flex items-center gap-1.5 rounded-md bg-accent-soft px-2 py-1 text-2xs font-medium text-accent">
           <GitCompare className="h-3 w-3" weight="fill" /> comparing materials
@@ -115,7 +121,10 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
           <div className="skeleton h-3 w-11/12" />
           <div className="skeleton h-3 w-4/5" />
           <p className="flex items-center gap-1.5 pt-1 text-2xs text-content-muted">
-            <Spinner className="h-3 w-3 animate-spin" /> reading your materials
+            <Spinner className="h-3 w-3 animate-spin" />
+            {groundingDone && streamingChunks.length === 0
+              ? "answering from general knowledge"
+              : "reading your materials"}
           </p>
         </div>
       ) : (
@@ -129,6 +138,8 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
 
       {answer && !message.pending && (
         <>
+          {answer.chart && <ChartView chart={answer.chart} />}
+
           {!isMeta && !answer.grounded && !answer.insufficientEvidence && (
             <p className="mt-3.5 flex items-start gap-2 rounded-md border border-caution/25 bg-caution/8 p-2.5 text-2xs leading-relaxed text-caution">
               <BookOpen className="mt-px h-3 w-3 shrink-0" weight="fill" />
@@ -160,7 +171,6 @@ export function AnswerCard({ message }: { message: ChatMessage }) {
                 </span>
               )}
               <span className="chip py-0.5 capitalize">{answer.explainLevel}</span>
-              <span className="font-mono">{answer.model}</span>
               <span className="tnum">{formatMs(answer.latencyMs)}</span>
               {answer.cached && <span className="chip py-0.5">cached</span>}
 

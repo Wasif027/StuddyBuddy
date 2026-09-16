@@ -63,6 +63,14 @@
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
+  /* Settings → Appearance sets --ui-scale on <html> (AppearanceEffect.tsx).
+   * One slider drives both text size and spacing across the app — see
+   * --space-scale below, read by the handful of components with the
+   * largest visual footprint. */
+  font-size: calc(16px * var(--ui-scale, 1));
+}
+:root {
+  --space-scale: var(--ui-scale, 1);
 }
 
 html,

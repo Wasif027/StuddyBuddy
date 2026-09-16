@@ -60,7 +60,10 @@ export function Composer() {
 
   return (
     <div className="border-t border-line bg-surface-raised">
-      <div className="mx-auto w-full max-w-[46rem] px-5 py-4">
+      <div
+        className="mx-auto w-full max-w-[46rem] px-5"
+        style={{ paddingTop: "calc(var(--space-scale, 1) * 1rem)", paddingBottom: "calc(var(--space-scale, 1) * 1rem)" }}
+      >
         {compareDocIds.length > 0 && (
           <div
             className={cn(
